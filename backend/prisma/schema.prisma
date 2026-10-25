@@ -1,0 +1,785 @@
+// prisma/schema.prisma — الترجمة الكاملة لـ docs/DATABASE_DESIGN.md
+// مَقوتي — قاعدة بيانات مركزية متعددة المستأجرين (PostgreSQL)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════ التعدادات ═══════════════════════════════
+
+enum StoreOwnerStatus {
+  TRIAL
+  TRIAL_WARNING
+  TRIAL_EXPIRED
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+}
+
+enum WorkerStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum PaymentType {
+  CASH
+  ELECTRONIC
+  CREDIT
+}
+
+enum EmergencyPriceMode {
+  COST_ONLY
+  COST_PLUS
+  RANGE_OR_OPEN
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum DeviceStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum SyncOpStatus {
+  ACCEPTED
+  REJECTED
+}
+
+enum ClosingStatus {
+  OPEN
+  CLOSED
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum LedgerReferenceType {
+  SALE
+  CREDIT_PAYMENT
+  EXPENSE
+  DAMAGED_GOODS
+  CLOSING
+  RETURN
+  EMERGENCY_SALE_LOSS
+  REJECTED_TRANSACTION_RESOLUTION
+}
+
+enum RejectionReasonCode {
+  CREDIT_LIMIT_EXCEEDED
+  INSUFFICIENT_STOCK
+}
+
+enum RejectedStatus {
+  PENDING
+  RESOLVED
+}
+
+enum ResolutionAction {
+  POST_AS_LOSS
+  ADD_CREDIT
+  APPROVE_ADJUSTED_QTY
+  APPROVE_NEGATIVE_STOCK
+  FINAL_REJECT
+}
+
+enum UtilityType {
+  WATER
+  ELECTRICITY
+  INTERNET
+  OTHER
+}
+
+enum BroadcastType {
+  POPUP
+  NOTIFICATION
+  OFFER
+  ADVERTISEMENT
+  STICKY_BANNER
+}
+
+enum BroadcastTargetType {
+  ALL
+  SPECIFIC_DEVICE
+  TRIAL
+  ACTIVE
+  EXPIRED
+}
+
+enum BroadcastPriority {
+  NORMAL
+  HIGH
+}
+
+enum BroadcastAckType {
+  VIEW
+  CLICK
+}
+
+enum ActorType {
+  PLATFORM_ADMIN
+  STORE_OWNER
+  WORKER
+  SYSTEM
+}
+
+enum AuditResult {
+  SUCCESS
+  FAILURE
+}
+
+enum RefreshUserType {
+  PLATFORM_ADMIN
+  STORE_OWNER
+  WORKER
+}
+
+// ═══════════════════════ طبقة الحسابات والمستخدمين ═══════════════════════
+
+model PlatformAdmin {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fullName     String   @map("full_name")
+  phone        String   @unique
+  passwordHash String   @map("password_hash") // Argon2id
+  mfaSecret    String?  @map("mfa_secret")
+  mfaEnabled   Boolean  @default(false) @map("mfa_enabled") // MFA إلزامي — الحقل يتتبع إتمام التسجيل
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  generatedTempPasswords TempPasswordAudit[]
+  activatedSubscriptions Subscription[]        @relation("ActivatedSubscriptions")
+  broadcasts             Broadcast[]
+
+  @@map("platform_admins")
+}
+
+model StoreOwner {
+  id                     String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid // = Tenant ID
+  fullName               String            @map("full_name")
+  storeName              String            @map("store_name")
+  phone                  String            @unique // وسيلة تسجيل الدخول + مرجع الاشتراك
+  passwordHash           String            @map("password_hash")
+  status                 StoreOwnerStatus  @default(TRIAL)
+  trialSalesUsed         Int               @default(0) @map("trial_sales_used") // يزيد طالما trial_sales_used < trial_sales_limit
+  trialSalesLimit        Int               @default(100) @map("trial_sales_limit") // snapshot يُزرع من system_settings عند الإنشاء
+  maxWorkersAllowed      Int               @default(0) @map("max_workers_allowed") // رصيد موافقات العمال العاديين من App Owner (R-33)
+  tempPasswordHash       String?           @map("temp_password_hash")
+  tempPasswordGeneratedAt DateTime?        @map("temp_password_generated_at")
+  mustChangePassword     Boolean           @default(false) @map("must_change_password")
+  deletedAt              DateTime?         @map("deleted_at")
+  createdAt              DateTime          @default(now()) @map("created_at")
+  updatedAt              DateTime          @updatedAt @map("updated_at")
+
+  workers               Worker[]
+  items                 Item[]
+  sales                 Sale[]
+  wallets               Wallet[]
+  rejectedTransactions  RejectedTransaction[]
+  damagedGoods          DamagedGood[]
+  creditCustomers       CreditCustomer[]
+  creditPayments        CreditPayment[]
+  employees             Employee[]
+  rentRecords           RentRecord[]
+  utilityPayments       UtilityPayment[]
+  workerAdvances        WorkerAdvance[]
+  dailyClosings         DailyClosing[]
+  chartOfAccounts       ChartOfAccount[]
+  ledgerEntries         LedgerEntry[]
+  returns               Return[]
+  subscriptions         Subscription[]
+  devices               Device[]
+  cloudBackups          CloudBackup[]
+  syncOperations        SyncOperation[]
+  broadcastAcks         BroadcastAck[]
+
+  @@index([status])
+  @@map("store_owners")
+}
+
+model Worker {
+  id                                  String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId                        String       @map("store_owner_id") @db.Uuid
+  fullName                            String       @map("full_name")
+  phone                               String       @unique // اسم الدخول، فريد على مستوى النظام بالكامل
+  passwordHash                        String       @map("password_hash")
+  status                              WorkerStatus @default(ACTIVE)
+  suspendedManuallyBeforeOwnerLock    Boolean      @default(false) @map("suspended_manually_before_owner_lock") // R-23
+  isResponsible                       Boolean      @default(false) @map("is_responsible") // العامل المسؤول الوحيد لكل مالك
+  permShowCostPrice                   Boolean      @default(false) @map("perm_show_cost_price")
+  permShowSellPricesInventory         Boolean      @default(false) @map("perm_show_sell_prices_inventory")
+  permDamagedGoodsEntry               Boolean      @default(true)  @map("perm_damaged_goods_entry")
+  permReportsAccess                   Boolean      @default(false) @map("perm_reports_access")
+  permEnterOwnAdvance                 Boolean      @default(true)  @map("perm_enter_own_advance") // لا أثر للعامل العادي — للمسؤول فقط (R-10)
+  lastLoginAt                         DateTime?    @map("last_login_at")
+  deletedAt                           DateTime?    @map("deleted_at")
+  createdAt                           DateTime     @default(now()) @map("created_at")
+  updatedAt                           DateTime     @updatedAt @map("updated_at")
+
+  storeOwner     StoreOwner       @relation(fields: [storeOwnerId], references: [id])
+  sales          Sale[]
+  damagedGoods   DamagedGood[]
+  creditPayments CreditPayment[]
+  workerAdvances WorkerAdvance[]
+  returns        Return[]
+  devices        Device[]
+  linkedEmployees Employee[]
+
+  @@index([storeOwnerId, status])
+  @@map("workers")
+}
+
+// ═══════════════════════ طبقة الاشتراك والترخيص ═══════════════════════
+
+model SubscriptionPlan {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String // "شهر"، "6 أشهر"، "12 شهر"، "مخصص"
+  durationDays Int      @map("duration_days") // 30 / 180 / 365 / قيمة يحددها App Owner
+  isCustom     Boolean  @default(false) @map("is_custom")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  subscriptions Subscription[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id           String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String             @map("store_owner_id") @db.Uuid
+  planId       String             @map("plan_id") @db.Uuid
+  activatedBy  String             @map("activated_by") @db.Uuid
+  startsAt     DateTime           @map("starts_at")
+  expiresAt    DateTime           @map("expires_at")
+  status       SubscriptionStatus @default(ACTIVE)
+  agreedAmount Decimal?           @map("agreed_amount") @db.Decimal(12, 2) // المبلغ الفعلي المتفق عليه بعد أي خصم (للسجل فقط — R-09)
+  createdAt    DateTime           @default(now()) @map("created_at")
+
+  storeOwner     StoreOwner      @relation(fields: [storeOwnerId], references: [id])
+  plan           SubscriptionPlan @relation(fields: [planId], references: [id])
+  activatedByAdmin PlatformAdmin @relation("ActivatedSubscriptions", fields: [activatedBy], references: [id])
+
+  @@index([storeOwnerId, status])
+  @@index([expiresAt])
+  @@map("subscriptions")
+}
+
+model Device {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deviceFingerprint String       @unique @map("device_fingerprint") // هوية جهاز متعددة الطبقات
+  storeOwnerId      String?      @map("store_owner_id") @db.Uuid
+  workerId          String?      @map("worker_id") @db.Uuid
+  firstSeenAt       DateTime     @default(now()) @map("first_seen_at")
+  lastSeenAt        DateTime     @default(now()) @map("last_seen_at")
+  lastSyncAt        DateTime?    @map("last_sync_at")
+  lastSyncVersion   BigInt       @default(0) @map("last_sync_version") // أساس Delta Sync
+  appVersion        String?      @map("app_version")
+  os                String?
+  status            DeviceStatus @default(ACTIVE)
+  trialConsumed     Boolean      @default(false) @map("trial_consumed") // يمنع منح تجربة جديدة لنفس الجهاز (R-25)
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  storeOwner      StoreOwner?     @relation(fields: [storeOwnerId], references: [id])
+  worker          Worker?         @relation(fields: [workerId], references: [id])
+  syncOperations  SyncOperation[]
+  refreshSessions RefreshSession[]
+  broadcastAcks   BroadcastAck[]
+
+  @@index([storeOwnerId])
+  @@index([workerId])
+  @@map("devices")
+}
+
+model SyncOperation {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String       @map("store_owner_id") @db.Uuid
+  deviceId     String       @map("device_id") @db.Uuid
+  clientOpId   String       @map("client_op_id")
+  opType       String       @map("op_type") // SALE, DAMAGED_GOODS, CREDIT_PAYMENT...
+  status       SyncOpStatus
+  errorCode    String?      @map("error_code")
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  device     Device     @relation(fields: [deviceId], references: [id])
+
+  @@unique([storeOwnerId, clientOpId]) // منع التكرار نهائياً (Idempotency)
+  @@map("sync_operations")
+}
+
+model RefreshSession {
+  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userType  RefreshUserType  @map("user_type")
+  userId    String           @map("user_id") @db.Uuid
+  deviceId  String?          @map("device_id") @db.Uuid
+  tokenHash String           @unique @map("token_hash") // sha256 لـ refresh_token الحالي (يدعم التدوير والإبطال)
+  expiresAt DateTime         @map("expires_at")
+  revokedAt DateTime?        @map("revoked_at") // عند logout أو التدوير أو حظر الجهاز
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  device Device? @relation(fields: [deviceId], references: [id])
+
+  @@index([userId, userType])
+  @@map("refresh_sessions")
+}
+
+// ═══════════════════════ طبقة المخزون والأصناف ═══════════════════════
+
+model Item {
+  id                          String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId                String             @map("store_owner_id") @db.Uuid
+  name                        String
+  unit                        String // "كيلو"، "ربطة"، "حزمة"...
+  quantity                    Decimal            @db.Decimal(12, 3) // الكمية المتبقية الحالية (قاعدة سلامة: >= 0)
+  costPrice                   Decimal            @map("cost_price") @db.Decimal(12, 2)
+  sellPrice                   Decimal            @map("sell_price") @db.Decimal(12, 2)
+  entryDate                   DateTime           @map("entry_date") @db.Date // ثابت غير قابل للتعديل بعد الإنشاء (BR-001)
+  emergencyPriceMode          EmergencyPriceMode @default(RANGE_OR_OPEN) @map("emergency_price_mode")
+  emergencyPricePlusFixed     Decimal?           @map("emergency_price_plus_fixed") @db.Decimal(12, 2)
+  emergencyPricePlusPercent   Decimal?           @map("emergency_price_plus_percent") @db.Decimal(5, 2)
+  emergencyPriceMin           Decimal?           @map("emergency_price_min") @db.Decimal(12, 2) // NULL = مفتوح
+  emergencyPriceMax           Decimal?           @map("emergency_price_max") @db.Decimal(12, 2) // الحد الأقصى (اختياري — يُفحص عند تحديده)
+  deletedAt                   DateTime?          @map("deleted_at")
+  createdAt                   DateTime           @default(now()) @map("created_at")
+  updatedAt                   DateTime           @updatedAt @map("updated_at")
+
+  storeOwner   StoreOwner     @relation(fields: [storeOwnerId], references: [id])
+  sales        Sale[]
+  damagedGoods DamagedGood[]
+  returns      Return[]
+
+  @@index([storeOwnerId, entryDate])
+  @@map("items")
+}
+
+// ═══════════════════════ طبقة العمليات (المبيعات) ═══════════════════════
+
+model Sale {
+  id                     String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId           String           @map("store_owner_id") @db.Uuid
+  workerId               String?          @map("worker_id") @db.Uuid // NULL إذا نفّذ المالك نفسه البيع
+  itemId                 String           @map("item_id") @db.Uuid
+  quantity               Decimal          @db.Decimal(12, 3)
+  amount                 Decimal          @db.Decimal(12, 2)
+  paymentType            PaymentType      @map("payment_type")
+  walletId               String?          @map("wallet_id") @db.Uuid // إلزامي فقط عند ELECTRONIC
+  depositAttachmentUrl   String?          @map("deposit_attachment_url") // إلزامي فقط عند ELECTRONIC
+  creditCustomerId       String?          @map("credit_customer_id") @db.Uuid // إلزامي فقط عند CREDIT
+  isEmergencySale        Boolean          @default(false) @map("is_emergency_sale")
+  emergencyReason        String?          @map("emergency_reason") // إلزامي إن is_emergency_sale=true
+  emergencyOverridePrice Decimal?         @map("emergency_override_price") @db.Decimal(12, 2)
+  priceDifferenceLoss    Decimal          @default(0) @map("price_difference_loss") @db.Decimal(12, 2)
+  dailyClosingId         String?          @map("daily_closing_id") @db.Uuid // يُربط عند اعتماد الإغلاق
+  soldAt                 DateTime         @default(now()) @map("sold_at")
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
+
+  storeOwner     StoreOwner      @relation(fields: [storeOwnerId], references: [id])
+  worker         Worker?         @relation(fields: [workerId], references: [id])
+  item           Item            @relation(fields: [itemId], references: [id])
+  wallet         Wallet?         @relation(fields: [walletId], references: [id])
+  creditCustomer CreditCustomer? @relation(fields: [creditCustomerId], references: [id])
+  dailyClosing   DailyClosing?   @relation(fields: [dailyClosingId], references: [id])
+  returns        Return[]
+
+  @@index([storeOwnerId, workerId, soldAt])
+  @@index([dailyClosingId])
+  @@map("sales")
+}
+
+model Wallet {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String   @map("store_owner_id") @db.Uuid
+  name         String // "كريمي"، "جيب"، "ون كاش"...
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  sales      Sale[]
+
+  @@map("wallets")
+}
+
+// ═══════════════════════ طبقة العمليات المرفوضة (R-30) ═══════════════════════
+
+model RejectedTransaction {
+  id                     String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId           String               @map("store_owner_id") @db.Uuid
+  workerId               String?              @map("worker_id") @db.Uuid // من حاول تنفيذ العملية أصلاً
+  attemptedPayload       Json                 @map("attempted_payload") // نسخة كاملة من بيانات عملية البيع كما وصلت من الجهاز
+  rejectionReasonCode    RejectionReasonCode  @map("rejection_reason_code") // حصراً: CREDIT_LIMIT_EXCEEDED أو INSUFFICIENT_STOCK
+  rejectionReasonDetail  String?              @map("rejection_reason_detail")
+  status                 RejectedStatus       @default(PENDING)
+  resolutionAction       ResolutionAction?    @map("resolution_action")
+  adjustedQuantity       Decimal?             @map("adjusted_quantity") @db.Decimal(12, 3) // عند APPROVE_ADJUSTED_QTY
+  resolvedBy             String?              @map("resolved_by") @db.Uuid
+  resolvedAt             DateTime?            @map("resolved_at")
+  createdAt              DateTime             @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+
+  @@index([storeOwnerId, status])
+  @@map("rejected_transactions")
+}
+
+// ═══════════════════════ طبقة التالف ═══════════════════════
+
+model DamagedGood {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String   @map("store_owner_id") @db.Uuid
+  workerId     String?  @map("worker_id") @db.Uuid
+  itemId       String   @map("item_id") @db.Uuid
+  quantity     Decimal  @db.Decimal(12, 3) // تُخصم فوراً من items.quantity
+  isDamaged    Boolean  @map("is_damaged")
+  reason       String? // إلزامي إذا is_damaged=true (CHECK على مستوى قاعدة البيانات في migration)
+  photoUrl     String?  @map("photo_url") // إلزامي إذا is_damaged=true
+  recordedAt   DateTime @default(now()) @map("recorded_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  worker     Worker?    @relation(fields: [workerId], references: [id])
+  item       Item       @relation(fields: [itemId], references: [id])
+
+  @@map("damaged_goods")
+}
+
+// ═══════════════════════ طبقة الآجل (الديون) ═══════════════════════
+
+model CreditCustomer {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId    String    @map("store_owner_id") @db.Uuid
+  name            String
+  phone           String?
+  creditLimit     Decimal?  @map("credit_limit") @db.Decimal(12, 2) // سقف الائتمان، NULL = بلا سقف (Hard Block R-19)
+  addedByWorkerId String?   @map("added_by_worker_id") @db.Uuid
+  deletedAt       DateTime? @map("deleted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  storeOwner StoreOwner      @relation(fields: [storeOwnerId], references: [id])
+  sales      Sale[]
+  payments   CreditPayment[]
+
+  @@map("credit_customers")
+}
+
+model CreditPayment {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId    String   @map("store_owner_id") @db.Uuid
+  creditCustomerId String  @map("credit_customer_id") @db.Uuid
+  amount          Decimal  @db.Decimal(12, 2)
+  paymentMethod   PaymentType @map("payment_method") // CASH أو ELECTRONIC فقط
+  walletId        String?  @map("wallet_id") @db.Uuid
+  workerId        String?  @map("worker_id") @db.Uuid
+  dailyClosingId  String?  @map("daily_closing_id") @db.Uuid
+  paidAt          DateTime @default(now()) @map("paid_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  storeOwner     StoreOwner     @relation(fields: [storeOwnerId], references: [id])
+  creditCustomer CreditCustomer @relation(fields: [creditCustomerId], references: [id])
+  worker         Worker?        @relation(fields: [workerId], references: [id])
+  dailyClosing   DailyClosing?  @relation(fields: [dailyClosingId], references: [id])
+
+  @@map("credit_payments")
+}
+
+// ═══════════════════════ طبقة المصروفات ═══════════════════════
+
+model Employee {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId  String    @map("store_owner_id") @db.Uuid
+  linkedWorkerId String?  @map("linked_worker_id") @db.Uuid // ربط اختياري إن كان نفس الشخص عاملاً مسجلاً
+  name          String
+  monthlyDue    Decimal   @map("monthly_due") @db.Decimal(12, 2)
+  deletedAt     DateTime? @map("deleted_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  storeOwner    StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  linkedWorker  Worker?           @relation(fields: [linkedWorkerId], references: [id])
+  advances      EmployeeAdvance[]
+  payments      EmployeePayment[]
+
+  @@map("employees")
+}
+
+model EmployeeAdvance {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String @map("store_owner_id") @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  amount     Decimal  @db.Decimal(12, 2)
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@map("employee_advances")
+}
+
+model EmployeePayment {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String @map("store_owner_id") @db.Uuid
+  employeeId String   @map("employee_id") @db.Uuid
+  amount     Decimal  @db.Decimal(12, 2)
+  paidAt     DateTime @default(now()) @map("paid_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@map("employee_payments")
+}
+
+model RentRecord {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId  String   @map("store_owner_id") @db.Uuid
+  amount        Decimal  @db.Decimal(12, 2)
+  paymentMethod String   @map("payment_method")
+  payerName     String   @map("payer_name")
+  receiverName  String   @map("receiver_name")
+  paidAt        DateTime @default(now()) @map("paid_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+
+  @@map("rent_records")
+}
+
+model UtilityPayment {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId    String      @map("store_owner_id") @db.Uuid
+  utilityType     UtilityType @map("utility_type")
+  utilityTypeOther String?    @map("utility_type_other")
+  amount          Decimal     @db.Decimal(12, 2)
+  paidAt          DateTime    @default(now()) @map("paid_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+
+  @@map("utility_payments")
+}
+
+model WorkerAdvance {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String   @map("store_owner_id") @db.Uuid
+  workerId     String   @map("worker_id") @db.Uuid
+  amount       Decimal  @db.Decimal(12, 2)
+  note         String?
+  recordedAt   DateTime @default(now()) @map("recorded_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  worker     Worker     @relation(fields: [workerId], references: [id])
+
+  @@map("worker_advances")
+}
+
+// ═══════════════════════ طبقة المطابقة اليومية والإغلاق ═══════════════════════
+
+model DailyClosing {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId String        @map("store_owner_id") @db.Uuid
+  workerId     String?       @map("worker_id") @db.Uuid // NULL يمثل إغلاق المالك نفسه
+  closingDate  DateTime      @map("closing_date") @db.Date
+  actualCash   Decimal       @map("actual_cash") @db.Decimal(12, 2)
+  expectedCash Decimal       @map("expected_cash") @db.Decimal(12, 2) // محسوب: مبيعات نقدية + دفعات آجل نقدية لنفس الحساب واليوم
+  difference   Decimal       @db.Decimal(12, 2) // actual_cash - expected_cash (تُحسب في الخدمة عند الحفظ)
+  status       ClosingStatus @default(OPEN)
+  approvedBy   String?       @map("approved_by") @db.Uuid // يُملأ عند CLOSED
+  approvedAt   DateTime?     @map("approved_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  storeOwner     StoreOwner      @relation(fields: [storeOwnerId], references: [id])
+  sales          Sale[]
+  creditPayments CreditPayment[]
+
+  @@unique([storeOwnerId, workerId, closingDate]) // Prisma: يُستكمل بـ NULLS NOT DISTINCT عبر SQL خام في migration (PostgreSQL 15+)
+  @@map("daily_closings")
+}
+
+// ═══════════════════════ طبقة المحاسبة (Double-Entry) ═══════════════════════
+
+model ChartOfAccount {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId    String      @map("store_owner_id") @db.Uuid
+  code            String // 1000، 1100، ... 5600، 4300
+  name            String
+  accountType     AccountType @map("account_type")
+  parentAccountId String?     @map("parent_account_id") @db.Uuid
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  storeOwner StoreOwner     @relation(fields: [storeOwnerId], references: [id])
+  parent     ChartOfAccount? @relation("AccountHierarchy", fields: [parentAccountId], references: [id])
+  children   ChartOfAccount[] @relation("AccountHierarchy")
+  ledgerEntries LedgerEntry[]
+
+  @@unique([storeOwnerId, code])
+  @@map("chart_of_accounts")
+}
+
+model LedgerEntry {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId   String              @map("store_owner_id") @db.Uuid
+  entryDate      DateTime            @map("entry_date") @db.Date
+  referenceType  LedgerReferenceType @map("reference_type")
+  referenceId    String              @map("reference_id") @db.Uuid
+  accountId      String              @map("account_id") @db.Uuid
+  debit          Decimal             @default(0) @db.Decimal(12, 2)
+  credit         Decimal             @default(0) @db.Decimal(12, 2)
+  description    String?
+  createdAt      DateTime            @default(now()) @map("created_at") // Append-only (BR-055) — لا تعديل ولا حذف
+
+  storeOwner StoreOwner     @relation(fields: [storeOwnerId], references: [id])
+  account    ChartOfAccount @relation(fields: [accountId], references: [id])
+
+  @@index([storeOwnerId, entryDate])
+  @@index([referenceType, referenceId])
+  @@index([accountId])
+  @@map("ledger_entries")
+}
+
+model Return {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId  String   @map("store_owner_id") @db.Uuid
+  saleId        String   @map("sale_id") @db.Uuid
+  workerId      String?  @map("worker_id") @db.Uuid
+  quantity      Decimal  @db.Decimal(12, 3)
+  amount        Decimal  @db.Decimal(12, 2)
+  returnedAt    DateTime @default(now()) @map("returned_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  sale       Sale       @relation(fields: [saleId], references: [id])
+  worker     Worker?    @relation(fields: [workerId], references: [id])
+  item       Item?      @relation(fields: [itemId], references: [id])
+  itemId     String?    @map("item_id") @db.Uuid
+
+  @@map("returns")
+}
+
+// ═══════════════════════ طبقة الرسائل والإعلانات والعروض ═══════════════════════
+
+model Broadcast {
+  id                   String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  createdBy            String              @map("created_by") @db.Uuid
+  type                 BroadcastType
+  title                String
+  body                 String
+  imageUrl             String?             @map("image_url")
+  buttonText           String?             @map("button_text")
+  buttonUrl            String?             @map("button_url") // خارجي (واتساب) أو مسار داخلي
+  durationHours        Int                 @default(0) @map("duration_hours") // 0 = حتى الإيقاف اليدوي
+  expiresAt            DateTime?           @map("expires_at") // يحوَّل من duration_hours لحظة الإنشاء
+  dismissible          Boolean             @default(true)
+  priority             BroadcastPriority   @default(NORMAL)
+  targetType           BroadcastTargetType @map("target_type")
+  targetDeviceId       String?             @map("target_device_id") @db.Uuid
+  discountCode         String?             @map("discount_code") // يُحفظ Upper-case (BR-061)
+  discountPercentText  String?             @map("discount_percent_text")
+  isActive             Boolean             @default(true) @map("is_active")
+  viewsCount           Int                 @default(0) @map("views_count")
+  clicksCount          Int                 @default(0) @map("clicks_count")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  createdByAdmin PlatformAdmin @relation(fields: [createdBy], references: [id])
+  acks           BroadcastAck[]
+
+  @@map("broadcasts")
+}
+
+model BroadcastAck {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  broadcastId   String           @map("broadcast_id") @db.Uuid
+  deviceId      String           @map("device_id") @db.Uuid
+  storeOwnerId  String?          @map("store_owner_id") @db.Uuid
+  ackType       BroadcastAckType @map("ack_type")
+  ackedAt       DateTime         @default(now()) @map("acked_at")
+
+  broadcast  Broadcast   @relation(fields: [broadcastId], references: [id])
+  device     Device      @relation(fields: [deviceId], references: [id])
+  storeOwner StoreOwner? @relation(fields: [storeOwnerId], references: [id])
+
+  @@map("broadcast_acks")
+}
+
+// ═══════════════════════ طبقة سجل التدقيق ═══════════════════════
+
+model AuditLog {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  actorType     ActorType   @map("actor_type")
+  actorId       String?     @map("actor_id") @db.Uuid
+  actionType    String      @map("action_type") // القائمة الكاملة في 13-authentication-security.md القسم 9
+  targetType    String?     @map("target_type")
+  targetId      String?     @map("target_id") @db.Uuid
+  oldValue      Json?       @map("old_value")
+  newValue      Json?       @map("new_value")
+  ipAddress     String?     @map("ip_address")
+  deviceInfo    String?     @map("device_info")
+  result        AuditResult
+  failureReason String?     @map("failure_reason")
+  createdAt     DateTime    @default(now()) @map("created_at") // Append-only
+
+  @@index([actorId])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+// ═══════════════════════ طبقة إعدادات النظام ═══════════════════════
+
+model SystemSetting {
+  key       String   @id // trial_sales_limit, trial_warning_threshold, contact_phone, ...
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+// ═══════════════════════ طبقة النسخ الاحتياطي السحابي ═══════════════════════
+
+model CloudBackup {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId      String   @map("store_owner_id") @db.Uuid
+  fileUrl           String   @map("file_url")
+  sizeBytes         BigInt   @map("size_bytes")
+  tenantBindingHash String   @map("tenant_binding_hash") // تجزئة HMAC مشتقة من store_owner_id — تُفحص إلزامياً عند الاستيراد (R-29)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+
+  @@index([storeOwnerId, createdAt])
+  @@map("cloud_backups")
+}
+
+// ═══════════════════════ تدقيق توليد كلمات المرور المؤقتة (R-32) ═══════════════════════
+
+model TempPasswordAudit {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  adminId        String   @map("admin_id") @db.Uuid
+  storeOwnerId   String   @map("store_owner_id") @db.Uuid
+  generatedAt    DateTime @default(now()) @map("generated_at")
+  expiresAt      DateTime @map("expires_at")
+  usedAt         DateTime? @map("used_at")
+
+  admin PlatformAdmin @relation(fields: [adminId], references: [id])
+
+  @@index([storeOwnerId])
+  @@map("temp_password_audits")
+}

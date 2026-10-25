@@ -1,0 +1,698 @@
+openapi: 3.0.3
+info:
+  title: Muqawati (مَقوتي) API
+  description: >
+    REST API مركزي لنظام مَقوتي — POS متاجر القات + نظام الترخيص والاشتراكات.
+    يغطي هذا الملف النواة الأساسية (Auth بما فيها دخول الأدمن/MFA، Items بسياسة
+    البيع الاضطراري، Sales، Workers، Credit، Daily Closing، Admin Subscriptions).
+    بقية المسارات موثقة نصياً في API_SPEC.md وتُستكمل هنا بنفس النمط في نسخة لاحقة.
+  version: "0.1.0-draft"
+servers:
+  - url: https://api.maqouti.app/v1
+    description: Production (مثال، يُحدَّد فعلياً لاحقاً)
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: "CREDIT_LIMIT_EXCEEDED" }
+            message: { type: string, example: "تجاوز المبلغ سقف ائتمان العميل المسموح." }
+            details: { type: object, additionalProperties: true }
+
+    AuthTokens:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        role: { type: string, enum: [STORE_OWNER, WORKER, PLATFORM_ADMIN] }
+        account_status:
+          type: string
+          enum: [TRIAL, TRIAL_WARNING, TRIAL_EXPIRED, ACTIVE, EXPIRED, SUSPENDED]
+
+    TempPasswordLoginResponse:
+      type: object
+      description: استجابة دخول بكلمة مرور احتياطية مؤقتة — لا تتضمن access_token كامل الصلاحية
+      properties:
+        must_change_password: { type: boolean, enum: [true] }
+        temp_access_token:
+          type: string
+          description: توكن محدود يسمح فقط باستدعاء /auth/set-new-password
+
+    StoreOwnerRegisterRequest:
+      type: object
+      required: [full_name, store_name, phone, password, password_confirmation, device_fingerprint]
+      properties:
+        full_name: { type: string, example: "محمد أحمد" }
+        store_name: { type: string, example: "مقوت الصباحي" }
+        phone: { type: string, example: "777123456" }
+        password: { type: string, format: password }
+        password_confirmation: { type: string, format: password }
+        device_fingerprint: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [phone, password, device_fingerprint]
+      properties:
+        phone: { type: string }
+        password: { type: string, format: password }
+        device_fingerprint: { type: string }
+
+    AdminLoginRequest:
+      type: object
+      required: [phone, password]
+      properties:
+        phone: { type: string }
+        password: { type: string, format: password }
+
+    AdminMfaVerifyRequest:
+      type: object
+      required: [mfa_challenge_token, code]
+      properties:
+        mfa_challenge_token: { type: string }
+        code: { type: string, example: "123456" }
+
+    Permissions:
+      description: "الوصول للآجل مرتبط بدور is_responsible وليس صلاحية فردية. enter_own_advance: لا أثر للعامل العادي — تفعيلها للعامل المسؤول يتيح له دخول شاشة المصروفات (تبويب سلفتي فقط) — R-10"
+      type: object
+      properties:
+        show_cost_price: { type: boolean, default: false }
+        show_sell_prices_inventory: { type: boolean, default: false }
+        damaged_goods_entry: { type: boolean, default: true }
+        reports_access: { type: boolean, default: false }
+        enter_own_advance: { type: boolean, default: true }
+
+    Worker:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string }
+        phone: { type: string }
+        status: { type: string, enum: [ACTIVE, SUSPENDED, DELETED] }
+        is_responsible:
+          type: boolean
+          description: "العامل المسؤول الوحيد لكل مالك (يمنح وصول الآجل/الصندوق/النسخ الاحتياطي)"
+        last_login_at: { type: string, format: date-time, nullable: true }
+        permissions: { $ref: "#/components/schemas/Permissions" }
+
+    WorkerCreateRequest:
+      type: object
+      required: [full_name, phone, password, password_confirmation]
+      properties:
+        full_name: { type: string }
+        phone: { type: string }
+        password: { type: string, format: password }
+        password_confirmation: { type: string, format: password }
+        permissions: { $ref: "#/components/schemas/Permissions" }
+
+    WorkerUpdateRequest:
+      type: object
+      description: تعديل جزئي (كل الحقول اختيارية) — كلمة المرور لها endpoint مستقل /workers/{id}/password
+      properties:
+        full_name: { type: string }
+        phone: { type: string }
+        permissions: { $ref: "#/components/schemas/Permissions" }
+
+    Item:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: "شامي" }
+        unit: { type: string, example: "كيلو" }
+        quantity: { type: number, format: float }
+        cost_price: { type: number, format: float }
+        sell_price: { type: number, format: float }
+        is_emergency_priced:
+          type: boolean
+          description: حقل مشتق للعرض فقط (ليس عموداً في قاعدة البيانات)
+        entry_date: { type: string, format: date }
+        emergency_price_mode:
+          type: string
+          enum: [COST_ONLY, COST_PLUS, RANGE_OR_OPEN]
+        emergency_price_plus_fixed: { type: number, nullable: true }
+        emergency_price_plus_percent: { type: number, nullable: true }
+        emergency_price_min: { type: number, nullable: true }
+        emergency_price_max: { type: number, nullable: true }
+
+    ItemCreateRequest:
+      type: object
+      required: [name, unit, quantity, cost_price, sell_price]
+      properties:
+        name: { type: string }
+        unit: { type: string }
+        quantity: { type: number }
+        cost_price: { type: number }
+        sell_price: { type: number }
+        emergency_price_mode:
+          type: string
+          enum: [COST_ONLY, COST_PLUS, RANGE_OR_OPEN]
+          description: سياسة البيع الاضطراري (R-14) — الافتراضي من system_settings.default_emergency_price_mode
+        emergency_price_plus_fixed: { type: number, nullable: true }
+        emergency_price_plus_percent: { type: number, nullable: true }
+        emergency_price_min: { type: number, nullable: true }
+        emergency_price_max: { type: number, nullable: true }
+
+    ItemUpdateRequest:
+      type: object
+      description: تعديل جزئي (كل الحقول اختيارية)
+      properties:
+        name: { type: string }
+        unit: { type: string }
+        quantity: { type: number }
+        cost_price: { type: number }
+        sell_price: { type: number }
+        emergency_price_mode: { type: string, enum: [COST_ONLY, COST_PLUS, RANGE_OR_OPEN] }
+        emergency_price_plus_fixed: { type: number, nullable: true }
+        emergency_price_plus_percent: { type: number, nullable: true }
+        emergency_price_min: { type: number, nullable: true }
+        emergency_price_max: { type: number, nullable: true }
+
+    SaleCreateRequest:
+      type: object
+      required: [item_id, quantity, amount, payment_type]
+      properties:
+        item_id: { type: string, format: uuid }
+        quantity: { type: number }
+        amount: { type: number }
+        payment_type: { type: string, enum: [CASH, ELECTRONIC, CREDIT] }
+        wallet_id: { type: string, format: uuid, nullable: true }
+        deposit_attachment_url: { type: string, nullable: true }
+        credit_customer_id: { type: string, format: uuid, nullable: true }
+        is_emergency_sale:
+          type: boolean
+          default: false
+          description: "تفعيل البيع الاضطراري لهذه العملية"
+        emergency_override_price: { type: number, nullable: true }
+        emergency_reason: { type: string, nullable: true, description: "إلزامي إن is_emergency_sale=true" }
+
+    Sale:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        item_id: { type: string, format: uuid }
+        worker_id: { type: string, format: uuid, nullable: true }
+        quantity: { type: number }
+        amount: { type: number }
+        payment_type: { type: string, enum: [CASH, ELECTRONIC, CREDIT] }
+        is_emergency_sale: { type: boolean }
+        sold_at: { type: string, format: date-time }
+
+    CreditCustomer:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        phone: { type: string, nullable: true }
+        credit_limit: { type: number, nullable: true }
+        total_debt: { type: number }
+
+    CreditPaymentCreateRequest:
+      type: object
+      required: [amount, payment_method]
+      properties:
+        amount: { type: number }
+        payment_method: { type: string, enum: [CASH, ELECTRONIC] }
+        wallet_id: { type: string, format: uuid, nullable: true }
+
+    DailyClosing:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        worker_id: { type: string, format: uuid, nullable: true }
+        closing_date: { type: string, format: date }
+        actual_cash: { type: number, nullable: true }
+        expected_cash: { type: number }
+        difference: { type: number }
+        status: { type: string, enum: [OPEN, CLOSED] }
+
+    SubscriptionPlan:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        duration_days: { type: integer }
+        is_custom: { type: boolean }
+
+    SubscriptionActivateRequest:
+      type: object
+      required: [plan_id]
+      properties:
+        plan_id: { type: string, format: uuid }
+        custom_days: { type: integer, nullable: true }
+        agreed_amount: { type: number, nullable: true, description: المبلغ الفعلي المتفق عليه بعد أي خصم (للسجل فقط — R-09) }
+
+    CreditCustomerUpdateRequest:
+      type: object
+      description: تعديل جزئي لعميل آجل (المالك أو العامل المسؤول)
+      properties:
+        name: { type: string }
+        phone: { type: string, nullable: true }
+        credit_limit: { type: number, nullable: true }
+
+paths:
+  /auth/register-store-owner:
+    post:
+      summary: إنشاء حساب مالك متجر جديد
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreOwnerRegisterRequest" }
+      responses:
+        "201":
+          description: تم إنشاء الحساب
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthTokens" }
+        "400": { description: بيانات غير صحيحة, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409": { description: رقم الهاتف مستخدم مسبقاً, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: الجهاز استهلك التجربة المجانية سابقاً (code=DEVICE_TRIAL_ALREADY_CONSUMED), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /auth/login:
+    post:
+      summary: تسجيل دخول (مالك أو عامل)
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: نجاح تسجيل الدخول (عادي أو بكلمة مرور مؤقتة)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/AuthTokens"
+                  - $ref: "#/components/schemas/TempPasswordLoginResponse"
+        "401": { description: بيانات دخول غير صحيحة, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "423": { description: الحساب مقفل — كود موحّد ACCOUNT_LOCKED مع reason (WORKER_SUSPENDED أو TRIAL_EXPIRED أو SUBSCRIPTION_EXPIRED), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /auth/admin/login:
+    post:
+      summary: دخول Platform Admin (مسار منفصل) — يُرجع تحدي MFA
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminLoginRequest" }
+      responses:
+        "200":
+          description: تحدي MFA مطلوب
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mfa_required: { type: boolean, enum: [true] }
+                  mfa_challenge_token: { type: string }
+        "401": { description: بيانات دخول غير صحيحة, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /auth/admin/mfa/verify:
+    post:
+      summary: تحقق MFA وإصدار توكنات الأدمن (إلزامي)
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminMfaVerifyRequest" }
+      responses:
+        "200":
+          description: توكنات الأدمن
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthTokens" }
+        "401": { description: كود MFA غير صحيح, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "419": { description: انتهت صلاحية تحدي MFA, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /auth/set-new-password:
+    post:
+      summary: إكمال تدفق كلمة المرور المؤقتة بإنشاء كلمة مرور جديدة
+      tags: [Auth]
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password, new_password_confirmation]
+              properties:
+                new_password: { type: string, format: password }
+                new_password_confirmation: { type: string, format: password }
+      responses:
+        "200":
+          description: تم تغيير كلمة المرور وإصدار توكنات كاملة
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthTokens" }
+
+  /workers:
+    get:
+      summary: قائمة عمال المالك
+      tags: [Workers]
+      responses:
+        "200":
+          description: قائمة العمال
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Worker" }
+    post:
+      summary: إنشاء عامل جديد
+      tags: [Workers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkerCreateRequest" }
+      responses:
+        "201":
+          description: تم إنشاء العامل
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Worker" }
+        "409": { description: رقم الهاتف مستخدم مسبقاً, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: لا رصيد موافقات عمال عاديين كافٍ (code=WORKER_LIMIT_REACHED — يتطلب منحاً من App Owner وفق R-33), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /workers/{id}:
+    get:
+      summary: تفاصيل عامل
+      tags: [Workers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: بيانات العامل
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Worker" }
+    patch:
+      summary: تعديل بيانات/صلاحيات عامل
+      tags: [Workers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkerUpdateRequest" }
+      responses:
+        "200":
+          description: تم التعديل
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Worker" }
+    delete:
+      summary: حذف حساب عامل (Soft Delete)
+      tags: [Workers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم الحذف }
+
+  /workers/{id}/suspend:
+    patch:
+      summary: إيقاف/إلغاء إيقاف عامل مؤقتاً
+      tags: [Workers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { suspended: { type: boolean } }
+      responses:
+        "200": { description: تم التحديث }
+
+  /items:
+    get:
+      summary: جدول أصناف اليوم
+      tags: [Items]
+      responses:
+        "200":
+          description: قائمة الأصناف
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Item" }
+    post:
+      summary: إضافة صنف جديد
+      tags: [Items]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ItemCreateRequest" }
+      responses:
+        "201":
+          description: تم الإنشاء
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Item" }
+
+  /items/{id}:
+    patch:
+      summary: تعديل صنف
+      tags: [Items]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ItemUpdateRequest" }
+      responses:
+        "200":
+          description: تم التعديل
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Item" }
+    delete:
+      summary: حذف صنف
+      tags: [Items]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم الحذف }
+
+  /sales:
+    post:
+      summary: تنفيذ عملية بيع
+      tags: [Sales]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SaleCreateRequest" }
+      responses:
+        "201":
+          description: تمت عملية البيع
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Sale" }
+        "403": { description: صلاحية الآجل غير مفعّلة للعامل, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409":
+          description: كمية غير كافية أو تجاوز سقف الائتمان (Hard Block)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "400":
+          description: مرفق إيداع ناقص، أو سبب التعديل مفقود، أو سعر اضطراري خارج السياسة (EMERGENCY_REASON_REQUIRED / EMERGENCY_PRICE_BELOW_MINIMUM / EMERGENCY_PRICE_ABOVE_MAXIMUM)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "423": { description: الحساب مقفل (اشتراك/تجربة منتهية), content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /credit-customers/{id}:
+    patch:
+      summary: تعديل بيانات عميل آجل (الاسم/الهاتف/سقف الائتمان) — المالك أو العامل المسؤول
+      tags: [Credit]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreditCustomerUpdateRequest" }
+      responses:
+        "200":
+          description: تم التعديل
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreditCustomer" }
+
+  /credit-customers:
+    get:
+      summary: قائمة عملاء الآجل
+      tags: [Credit]
+      responses:
+        "200":
+          description: القائمة
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CreditCustomer" }
+    post:
+      summary: إضافة عميل آجل جديد
+      tags: [Credit]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                phone: { type: string }
+                credit_limit: { type: number, nullable: true }
+      responses:
+        "201":
+          description: تم الإنشاء
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreditCustomer" }
+
+  /credit-customers/{id}/payments:
+    post:
+      summary: توصيل دفعة على حساب عميل آجل
+      tags: [Credit]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreditPaymentCreateRequest" }
+      responses:
+        "201": { description: تم تسجيل الدفعة }
+
+  /daily-closings/today:
+    get:
+      summary: بيانات إغلاق اليوم الحالي (المستخدم الحالي أو عامل محدد)
+      tags: [DailyClosing]
+      parameters:
+        - { name: worker_id, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: بيانات الإغلاق
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DailyClosing" }
+
+  /daily-closings/{id}:
+    patch:
+      summary: إدخال/تعديل الكاش الفعلي قبل الاعتماد
+      tags: [DailyClosing]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { actual_cash: { type: number } }
+      responses:
+        "200":
+          description: تم التحديث
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DailyClosing" }
+
+  /daily-closings/{id}/approve:
+    post:
+      summary: اعتماد إغلاق اليوم (المالك فقط، لنفسه أو لأي عامل تابع له)
+      tags: [DailyClosing]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: تم الاعتماد والإقفال
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DailyClosing" }
+        "409": { description: مُغلَق مسبقاً, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+
+  /admin/store-owners:
+    get:
+      summary: بحث عن عميل (مالك متجر) برقم الهاتف — بوابة App Owner
+      tags: [Admin]
+      parameters:
+        - { name: phone, in: query, required: false, schema: { type: string } }
+      responses:
+        "200": { description: نتائج البحث }
+
+  /admin/subscription-plans:
+    get:
+      summary: قائمة أنواع الاشتراك المعرَّفة
+      tags: [Admin]
+      responses:
+        "200":
+          description: القائمة
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SubscriptionPlan" }
+
+  /admin/store-owners/{id}/subscriptions:
+    post:
+      summary: تفعيل اشتراك جديد لمالك متجر (App Owner فقط)
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionActivateRequest" }
+      responses:
+        "201": { description: تم تفعيل الاشتراك }
+
+  /admin/store-owners/{id}/generate-temp-password:
+    post:
+      summary: توليد كلمة مرور احتياطية مؤقتة لمالك متجر نسي كلمة مروره
+      tags: [Admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: كلمة المرور الاحتياطية المولَّدة (تُعرض مرة واحدة فقط)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  temp_password: { type: string, example: "Xk9#mPq2" }
+                  expires_at: { type: string, format: date-time }
+
+tags:
+  - name: Auth
+  - name: Workers
+  - name: Items
+  - name: Sales
+  - name: Credit
+  - name: DailyClosing
+  - name: Admin

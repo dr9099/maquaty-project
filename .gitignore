@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+
+# Build outputs
+dist/
+build/
+*.apk
+*.aab
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+google-services.json
+*.keystore
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Prisma local
+backend/prisma/*.db

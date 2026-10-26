@@ -6,6 +6,7 @@ import { AuthService } from './auth.service';
 @Module({
   imports: [
     JwtModule.registerAsync({
+      global: true, // JwtService متاح لكل الحرسات والوحدات
       useFactory: () => ({ secret: process.env.JWT_SECRET ?? 'dev-secret-change-me' }),
     }),
   ],

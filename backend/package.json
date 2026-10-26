@@ -10,7 +10,10 @@
     "start:prod": "node dist/main",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy"
+    "prisma:deploy": "prisma migrate deploy",
+    "db:init": "bash scripts/dev-db.sh init",
+    "db:start": "bash scripts/dev-db.sh start",
+    "db:stop": "bash scripts/dev-db.sh stop"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",
@@ -31,6 +34,7 @@
     "@nestjs/schematics": "^11.0.0",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
+    "embedded-postgres": "^18.4.0-beta.17",
     "prisma": "^6.3.0",
     "typescript": "^5.7.0"
   }

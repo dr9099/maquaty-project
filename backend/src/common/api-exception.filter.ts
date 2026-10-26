@@ -35,9 +35,16 @@ export class ApiExceptionFilter implements ExceptionFilter {
       const res = exception.getResponse() as Record<string, unknown>;
       const message =
         typeof res === 'string' ? res : ((res.message as string | string[]) ?? exception.message);
+      // كود الخطأ حسب الحالة: 404 يبقى NOT_FOUND، 400 تحقق مدخلات، وما عداها داخلي
+      const code =
+        statusCode === 404 ? 'NOT_FOUND'
+        : statusCode === 401 ? 'INVALID_CREDENTIALS'
+        : statusCode === 403 ? 'PERMISSION_DENIED'
+        : statusCode === 400 ? 'VALIDATION_ERROR'
+        : 'INTERNAL_ERROR';
       body = {
         error: {
-          code: statusCode === 400 ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR',
+          code,
           message: Array.isArray(message) ? message.join('؛ ') : message,
           ...(typeof res !== 'string' && res.details
             ? { details: res.details as Record<string, unknown> }

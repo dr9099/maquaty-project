@@ -24,8 +24,8 @@ export class TenantIsolationGuard implements CanActivate {
       throw ApiError.forbidden('PERMISSION_DENIED', 'لا تملك صلاحية الوصول لهذا الإجراء.');
     }
 
-    // إعادة الضبط القسري: بيانات العملية تُقيَّد بهوية التوكن دائماً
-    request.body.storeOwnerId = user.storeOwnerId;
+    // الهوية التشغيلية تُقرأ في الخدمات من user.storeOwnerId مباشرة — لا حقن في الجسم
+    // (الحقن يصطدم بأنبوب التحقق الصارم forbidNonWhitelisted)
     return true;
   }
 }

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PaymentType, Prisma } from '@prisma/client';
+import { PaymentType, Prisma, StoreOwnerStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { ApiError } from '../common/api-error';
@@ -199,7 +199,7 @@ export class SalesService {
       if (owner.trial_sales_used < owner.trial_sales_limit) {
         const nextUsed = owner.trial_sales_used + 1;
         const remaining = owner.trial_sales_limit - nextUsed;
-        let nextStatus: typeof owner.status = owner.status;
+        let nextStatus: StoreOwnerStatus = owner.status as StoreOwnerStatus;
         if (nextUsed >= owner.trial_sales_limit) {
           nextStatus = 'TRIAL_EXPIRED'; // BR-042: قفل كامل فوري
         } else if (remaining <= this.trialWarningThreshold && (owner.status === 'TRIAL' || owner.status === 'TRIAL_WARNING')) {

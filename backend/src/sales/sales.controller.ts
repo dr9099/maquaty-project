@@ -1,7 +1,6 @@
 import { Body, Controller, Get, Post, Query, Req, UseFilters, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { ApiExceptionFilter } from '../common/api-exception.filter';
-import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { RequireRoles } from '../common/roles.decorator';
 import { RolesGuard } from '../common/roles.guard';
 import { TenantIsolationGuard } from '../common/tenant-isolation.guard';
@@ -12,7 +11,7 @@ import { CreateSaleDto } from './dto/create-sale.dto';
 // البيع — تسلسل التحقق الكامل داخل معاملة ذرّية (API_SPEC القسم 4) — البادئة v1 عالمية من main.ts
 @Controller('sales')
 @UseFilters(ApiExceptionFilter)
-@UseGuards(JwtAuthGuard, RolesGuard, TenantIsolationGuard)
+@UseGuards(RolesGuard, TenantIsolationGuard)
 export class SalesController {
   constructor(private readonly sales: SalesService) {}
 

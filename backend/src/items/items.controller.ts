@@ -14,7 +14,6 @@ import {
 import type { Request } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApiExceptionFilter } from '../common/api-exception.filter';
-import { JwtAuthGuard } from '../common/jwt-auth.guard';
 import { RequireRoles } from '../common/roles.decorator';
 import { RolesGuard } from '../common/roles.guard';
 import { TenantIsolationGuard } from '../common/tenant-isolation.guard';
@@ -27,7 +26,7 @@ import { CreateWalletDto } from './dto/wallets.dto';
 // الأصناف والمخزون والمحافظ — البادئة v1 تُضاف عالمياً من main.ts
 @Controller()
 @UseFilters(ApiExceptionFilter)
-@UseGuards(JwtAuthGuard, RolesGuard, TenantIsolationGuard)
+@UseGuards(RolesGuard, TenantIsolationGuard)
 export class ItemsController {
   constructor(
     private readonly items: ItemsService,

@@ -15,12 +15,17 @@ import { CreditModule } from './credit/credit.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { DailyClosingModule } from './daily-closing/daily-closing.module';
 import { DamagedGoodsModule } from './damaged-goods/damaged-goods.module';
+import { RejectedTransactionsModule } from './rejected-transactions/rejected-transactions.module';
+import { SyncModule } from './sync/sync.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+import { ReportsModule } from './reports/reports.module';
 
 // مَقوتي — Central Backend Server
 // المرحلة 1 ✓ (قاعدة البيانات + Auth + عزل Tenant + دليل الحسابات)
 // المرحلة 2 ✓ (الأصناف + البيع + المخزون + المحاسبة التلقائية + المرتجعات)
 // المرحلة 3 ✓ (العمال والصلاحيات + المسؤول + الموافقات R-33 + RBAC خادمي كامل)
 // المرحلة 4 ✓ (الآجل + المصروفات + التالف + المطابقة والإغلاق اليومي)
+// المرحلة 5 ✓ (المزامنة Sync Engine + العمليات المرفوضة + لوحة الملخص + الأموال والتقارير)
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -35,7 +40,11 @@ import { DamagedGoodsModule } from './damaged-goods/damaged-goods.module';
     ExpensesModule,
     DailyClosingModule,
     DamagedGoodsModule,
-    // المراحل اللاحقة: Sync+Dashboard+Rejected (م5) / Subscription+Admin (م6) / Backup (م7) / Broadcasts (م8)
+    RejectedTransactionsModule,
+    SyncModule,
+    DashboardModule,
+    ReportsModule,
+    // المراحل اللاحقة: Subscription+Admin (م6) / Backup (م7) / Broadcasts Admin (م8)
   ],
   providers: [
     // الترتيب ملزم: المصادقة أولاً ثم فحص حالة الحساب عند كل طلب (12-business §3)

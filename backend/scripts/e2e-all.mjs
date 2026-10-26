@@ -543,6 +543,303 @@ async function run() {
   check('عامل بصلاحية معطلة ممنوع من تسجيل سلفة لنفسه 403', 'PERMISSION_DENIED', normAdvFail.data?.error?.code);
 
   // ══════════════════════════════════════════════════════
+  // المرحلة 5: المزامنة والعمل دون اتصال (Sync Engine)
+  // ══════════════════════════════════════════════════════
+  console.log('\n--- المرحلة 5: المزامنة والعمل دون اتصال (Sync Engine) ---');
+
+  // مزامنة عمليات محلية أوفلاين (بيع + تالف)
+  const syncOp1Id = 'CLIENT-OP-001';
+  const syncOp2Id = 'CLIENT-OP-002';
+  const syncRes1 = await request('/v1/device/sync', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      deviceFingerprint: 'DEV-OWNER-SYNC',
+      lastSyncVersion: 0,
+      pendingLocalOperations: [
+        {
+          clientOpId: syncOp1Id,
+          opType: 'SALE',
+          payload: {
+            itemId: ITEM_ID,
+            quantity: 1,
+            amount: 3000,
+            paymentType: 'CASH',
+          },
+        },
+        {
+          clientOpId: syncOp2Id,
+          opType: 'DAMAGED_GOODS',
+          payload: {
+            itemId: ITEM_ID,
+            quantity: 0.5,
+            isDamaged: true,
+            reason: 'تلف شمس',
+            photoUrl: 'https://files.test/sun.jpg',
+          },
+        },
+      ],
+    },
+  });
+  check('مزامنة عمليات محلية ناجحة 200', 200, syncRes1.status);
+  check('إصدار المزامنة زاد إلى 1', 1, syncRes1.data?.new_sync_version);
+  check('العمليتان قُبلتا ACCEPTED', true, syncRes1.data?.processed_operations?.every((o) => o.status === 'ACCEPTED'));
+  check('وصول تحديثات الأصناف من الخادم', true, Array.isArray(syncRes1.data?.server_updates?.items));
+
+  // منع التكرار (Idempotency): إعادة إرسال نفس clientOpId تُرجع النتيجة المحفوظة دون تكرار
+  const syncReplay = await request('/v1/device/sync', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      deviceFingerprint: 'DEV-OWNER-SYNC',
+      pendingLocalOperations: [
+        {
+          clientOpId: syncOp1Id,
+          opType: 'SALE',
+          payload: {
+            itemId: ITEM_ID,
+            quantity: 1,
+            amount: 3000,
+            paymentType: 'CASH',
+          },
+        },
+      ],
+    },
+  });
+  check('منع التكرار (Idempotency) يُرجع نفس الحالة دون إعادة بيع', 'ACCEPTED', syncReplay.data?.processed_operations?.[0]?.status);
+
+  // حظر الجهاز المحظور (DEVICE_BLOCKED)
+  await prisma.device.create({
+    data: {
+      deviceFingerprint: 'DEV-BLOCKED-001',
+      status: 'BLOCKED',
+    },
+  });
+  const syncBlocked = await request('/v1/device/sync', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: { deviceFingerprint: 'DEV-BLOCKED-001' },
+  });
+  check('مزامنة جهاز محظور مرفوضة 403 (DEVICE_BLOCKED)', 'DEVICE_BLOCKED', syncBlocked.data?.error?.code);
+
+  // معالجة التعارض والرفض (R-30): عملية تجاوز سقف الائتمان ونقص المخزون
+  // تعديل سقف الائتمان إلى 8000 (الدين الحالي 7000 + 3000 = 10000 > 8000)
+  await request(`/v1/credit-customers/${CUSTOMER_ID}`, {
+    method: 'PATCH',
+    token: OWNER_TOKEN,
+    body: { creditLimit: 8000 },
+  });
+
+  const syncCreditFailId = 'CLIENT-OP-CREDIT-FAIL';
+  const syncStockFailId = 'CLIENT-OP-STOCK-FAIL';
+  const syncNormalFailId = 'CLIENT-OP-BAD-ITEM';
+
+  const syncConflictRes = await request('/v1/device/sync', {
+    method: 'POST',
+    token: RESP_TOKEN,
+    body: {
+      deviceFingerprint: 'DEV-RESP-SYNC',
+      pendingLocalOperations: [
+        // تجاوز سقف الائتمان
+        {
+          clientOpId: syncCreditFailId,
+          opType: 'SALE',
+          payload: {
+            itemId: ITEM_ID,
+            quantity: 1,
+            amount: 3000, // 7000 + 3000 = 10000 > 8000
+            paymentType: 'CREDIT',
+            creditCustomerId: CUSTOMER_ID,
+          },
+        },
+        // نقص المخزون
+        {
+          clientOpId: syncStockFailId,
+          opType: 'SALE',
+          payload: {
+            itemId: ITEM_ID,
+            quantity: 9999, // يتجاوز الكمية المتوفرة
+            amount: 29997000,
+            paymentType: 'CASH',
+          },
+        },
+        // خطأ عادي آخر (صنف غير موجود)
+        {
+          clientOpId: syncNormalFailId,
+          opType: 'SALE',
+          payload: {
+            itemId: '00000000-0000-0000-0000-000000000000',
+            quantity: 1,
+            amount: 3000,
+            paymentType: 'CASH',
+          },
+        },
+      ],
+    },
+  });
+  check('العمليات المرفوضة في المزامنة تعود بحالة REJECTED', true, syncConflictRes.data?.processed_operations?.every((o) => o.status === 'REJECTED'));
+
+  // ══════════════════════════════════════════════════════
+  // المرحلة 5: معالجة العمليات المرفوضة (Rejected Transactions — R-30)
+  // ══════════════════════════════════════════════════════
+  console.log('\n--- المرحلة 5: العمليات المرفوضة وحلها (R-30) ---');
+
+  // العامل العادي محظور من شاشة العمليات المرفوضة
+  const rej403 = await request('/v1/rejected-transactions', {
+    method: 'GET',
+    token: WORKER_TOKEN,
+  });
+  check('العامل العادي ممنوع من العمليات المرفوضة 403', 'PERMISSION_DENIED', rej403.data?.error?.code);
+
+  // المالك يستعلم عن العمليات المعلقة
+  const rejList = await request('/v1/rejected-transactions?status=PENDING', {
+    method: 'GET',
+    token: OWNER_TOKEN,
+  });
+  check('المالك يستعرض العمليات المرفوضة المعلقة', true, Array.isArray(rejList.data) && rejList.data.length >= 2);
+
+  const creditRej = rejList.data?.find((r) => r.rejection_reason_code === 'CREDIT_LIMIT_EXCEEDED');
+  const stockRej = rejList.data?.find((r) => r.rejection_reason_code === 'INSUFFICIENT_STOCK');
+  check('تسجيل عملية تجاوز سقف الائتمان تلقائياً (R-30)', true, !!creditRej);
+  check('تسجيل عملية نقص المخزون تلقائياً (R-30)', true, !!stockRej);
+  check('الخطأ العادي لم يُسجل في العمليات المرفوضة (R-30)', false, rejList.data?.some((r) => r.attempted_payload?.itemId === '00000000-0000-0000-0000-000000000000'));
+
+  // محاولة حل غير مسموح لسبب الرفض
+  const badActionRes = await request(`/v1/rejected-transactions/${creditRej.id}/resolve`, {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: { resolutionAction: 'APPROVE_NEGATIVE_STOCK' },
+  });
+  check('إجراء غير متطابق مع سبب الرفض مرفوض 400 (DISALLOWED_RESOLUTION_ACTION)', 'DISALLOWED_RESOLUTION_ACTION', badActionRes.data?.error?.code);
+
+  // المالك يحل عملية نقص المخزون بالموافقة بالكمية المصححة (APPROVE_ADJUSTED_QTY)
+  const resolveStock = await request(`/v1/rejected-transactions/${stockRej.id}/resolve`, {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      resolutionAction: 'APPROVE_ADJUSTED_QTY',
+      adjustedQuantity: 1,
+    },
+  });
+  check('حل عملية نقص المخزون بالكمية المصححة بنجاح', 200, resolveStock.status);
+  check('حالة العملية أصبحت RESOLVED', 'RESOLVED', resolveStock.data?.status);
+  check('تم إنشاء عملية بيع فعلية مصححة', true, !!resolveStock.data?.created_sale_id);
+
+  // المالك يحل عملية تجاوز سقف الائتمان بالترحيل كخسائر (POST_AS_LOSS)
+  const resolveCreditLoss = await request(`/v1/rejected-transactions/${creditRej.id}/resolve`, {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: { resolutionAction: 'POST_AS_LOSS' },
+  });
+  check('حل عملية تجاوز الائتمان بالترحيل كخسائر بنجاح', 200, resolveCreditLoss.status);
+
+  // ══════════════════════════════════════════════════════
+  // المرحلة 5: الرسائل والإعلانات (Broadcasts Pull & Ack)
+  // ══════════════════════════════════════════════════════
+  console.log('\n--- المرحلة 5: الرسائل والإعلانات (Broadcasts) ---');
+
+  // زراعة إعلان تجريبي في قاعدة البيانات
+  const testAdmin = (await prisma.platformAdmin.findFirst()) || (await prisma.platformAdmin.create({
+    data: {
+      fullName: 'مدير المنصة',
+      phone: '700000000',
+      passwordHash: 'dummy',
+    },
+  }));
+  const broadcast = await prisma.broadcast.create({
+    data: {
+      createdBy: testAdmin.id,
+      type: 'POPUP',
+      title: 'عرض الصيف',
+      body: 'خصم 20% على الاشتراك السنوي',
+      targetType: 'ALL',
+      isActive: true,
+    },
+  });
+
+  const pullRes = await request('/v1/device/broadcasts/pull', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: { deviceFingerprint: 'DEV-OWNER-SYNC' },
+  });
+  check('سحب الإعلانات السارية بنجاح', true, Array.isArray(pullRes.data) && pullRes.data.some((b) => b.id === broadcast.id));
+
+  // تأكيد القراءة ACK
+  const ackRes = await request(`/v1/device/broadcasts/${broadcast.id}/ack`, {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: { ackType: 'VIEW', deviceFingerprint: 'DEV-OWNER-SYNC' },
+  });
+  check('تأكيد قراءة الإعلان ACK بنجاح', 200, ackRes.status);
+
+  // سحب مرة أخرى: الإعلان المشاهد لا يعود
+  const pullRes2 = await request('/v1/device/broadcasts/pull', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: { deviceFingerprint: 'DEV-OWNER-SYNC' },
+  });
+  check('الإعلان المؤكدة قراءته لا يعود للجهاز نفسه', false, pullRes2.data?.some((b) => b.id === broadcast.id));
+
+  // ══════════════════════════════════════════════════════
+  // المرحلة 5: لوحة الملخص (Dashboard Summary — API_SPEC §15)
+  // ══════════════════════════════════════════════════════
+  console.log('\n--- المرحلة 5: لوحة الملخص (Dashboard Summary) ---');
+
+  const ownerDash = await request('/v1/dashboard/summary', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+  });
+  check('لوحة ملخص المالك تجلب إجماليات المتجر ككل', 200, ownerDash.status);
+  check('مبيعات اليوم الإجمالية > 0', true, ownerDash.data?.sales_today_total > 0);
+  check('حالة اليوم مفتوحة OPEN', 'OPEN', ownerDash.data?.today_status);
+
+  const workerDash = await request('/v1/dashboard/summary', {
+    method: 'GET',
+    token: WORKER_TOKEN,
+  });
+  check('لوحة ملخص العامل العادي تجلب أرقامه هو فقط', 200, workerDash.status);
+
+  // ══════════════════════════════════════════════════════
+  // المرحلة 5: الأموال والتقارير (Funds & Reports — API_SPEC §10)
+  // ══════════════════════════════════════════════════════
+  console.log('\n--- المرحلة 5: الأموال والتقارير (Funds & Reports) ---');
+
+  const fundsRes = await request('/v1/funds/summary', {
+    method: 'GET',
+    token: OWNER_TOKEN,
+  });
+  check('تقرير موقف الأموال للمالك 200', 200, fundsRes.status);
+  check('الصندوق والمحافظ والذمم وإجمالي الأموال متوفرة', true, fundsRes.data?.total_funds !== undefined);
+
+  // العامل العادي محظور من موقف الأموال
+  const funds403 = await request('/v1/funds/summary', {
+    method: 'GET',
+    token: WORKER_TOKEN,
+  });
+  check('عامل عادي محظور من موقف الأموال 403', 'PERMISSION_DENIED', funds403.data?.error?.code);
+
+  // تقارير المبيعات
+  const salesRep = await request('/v1/reports?type=sales', {
+    method: 'GET',
+    token: OWNER_TOKEN,
+  });
+  check('تقرير المبيعات يحوي العمليات والإجمالي', true, Array.isArray(salesRep.data?.records) && salesRep.data.total_amount > 0);
+
+  // تقرير المصروفات
+  const expRep = await request('/v1/reports?type=expenses', {
+    method: 'GET',
+    token: OWNER_TOKEN,
+  });
+  check('تقرير المصروفات يحوي الفئات والإجمالي', true, expRep.data?.total_expenses > 0 && expRep.data.categories?.rent > 0);
+
+  // تقرير المسحوبات (السلف)
+  const withRep = await request('/v1/reports?type=withdrawals', {
+    method: 'GET',
+    token: OWNER_TOKEN,
+  });
+  check('تقرير المسحوبات والسلف يحوي السجلات', true, withRep.data?.total_withdrawals > 0);
+
+  // ══════════════════════════════════════════════════════
   // المرحلة 4: المطابقة والإغلاق اليومي (Daily Closing & R-36)
   // ══════════════════════════════════════════════════════
   console.log('\n--- المرحلة 4: المطابقة والإغلاق اليومي R-36 ---');

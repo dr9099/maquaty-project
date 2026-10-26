@@ -12,7 +12,9 @@ import 'presentation/providers/dashboard_provider.dart';
 import 'presentation/providers/inventory_provider.dart';
 import 'presentation/providers/sales_provider.dart';
 
+import 'presentation/screens/auth/account_locked_screen.dart';
 import 'presentation/screens/auth/login_screen.dart';
+import 'presentation/screens/auth/set_new_password_screen.dart';
 import 'presentation/screens/auth/signup_screen.dart';
 import 'presentation/screens/closing/daily_closing_screen.dart';
 import 'presentation/screens/credit/credit_screen.dart';
@@ -74,6 +76,12 @@ class MuqawatiApp extends StatelessWidget {
               body: Center(child: CircularProgressIndicator()),
             );
           }
+          if (auth.status == AuthStatus.accountLocked) {
+            return const AccountLockedScreen();
+          }
+          if (auth.status == AuthStatus.mustChangePassword) {
+            return const SetNewPasswordScreen();
+          }
           if (auth.isAuthenticated) {
             return const HomeScreen();
           }
@@ -83,6 +91,8 @@ class MuqawatiApp extends StatelessWidget {
       routes: {
         '/login': (_) => const LoginScreen(),
         '/signup': (_) => const SignupScreen(),
+        '/account-locked': (_) => const AccountLockedScreen(),
+        '/set-new-password': (_) => const SetNewPasswordScreen(),
         '/home': (_) => const HomeScreen(),
         '/sell': (_) => const SellScreen(),
         '/inventory': (_) => const InventoryScreen(),

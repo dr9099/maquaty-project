@@ -21,6 +21,7 @@ google-services.json
 # IDE
 .idea/
 .vscode/
+.omm/
 *.iml
 
 # OS

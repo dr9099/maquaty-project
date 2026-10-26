@@ -13,7 +13,9 @@
     "prisma:deploy": "prisma migrate deploy",
     "db:init": "bash scripts/dev-db.sh init",
     "db:start": "bash scripts/dev-db.sh start",
-    "db:stop": "bash scripts/dev-db.sh stop"
+    "db:stop": "bash scripts/dev-db.sh stop",
+    "db:reset": "node --env-file=.env scripts/db-reset.js",
+    "test:e2e": "node --env-file=.env scripts/e2e-all.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

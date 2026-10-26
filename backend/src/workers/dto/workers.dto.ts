@@ -28,6 +28,10 @@ export class PermissionsDto {
   @IsOptional()
   @IsBoolean()
   enterOwnAdvance?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  editWorkerClosingCash?: boolean;
 }
 
 export class CreateWorkerDto {

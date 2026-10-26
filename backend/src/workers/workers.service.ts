@@ -67,6 +67,7 @@ export class WorkersService {
           permShowSellPricesInventory: dto.permissions?.showSellPricesInventory ?? false,
           permReportsAccess: dto.permissions?.reportsAccess ?? false,
           permEnterOwnAdvance: dto.permissions?.enterOwnAdvance ?? true,
+          permEditWorkerClosingCash: dto.permissions?.editWorkerClosingCash ?? true, // R-36: افتراضياً مفعّلة
           isResponsible: dto.isResponsible ?? false,
         },
       });
@@ -107,6 +108,7 @@ export class WorkersService {
               permDamagedGoodsEntry: dto.permissions.damagedGoodsEntry ?? worker.permDamagedGoodsEntry,
               permReportsAccess: dto.permissions.reportsAccess ?? worker.permReportsAccess,
               permEnterOwnAdvance: dto.permissions.enterOwnAdvance ?? worker.permEnterOwnAdvance,
+              permEditWorkerClosingCash: dto.permissions.editWorkerClosingCash ?? worker.permEditWorkerClosingCash,
             }
           : {}),
       },
@@ -344,6 +346,7 @@ type WorkerRow = {
   isResponsible: boolean; lastLoginAt: Date | null;
   permShowCostPrice: boolean; permShowSellPricesInventory: boolean;
   permDamagedGoodsEntry: boolean; permReportsAccess: boolean; permEnterOwnAdvance: boolean;
+  permEditWorkerClosingCash: boolean;
 };
 
 function permissionsOf(w: WorkerRow) {
@@ -353,6 +356,7 @@ function permissionsOf(w: WorkerRow) {
     damaged_goods_entry: w.permDamagedGoodsEntry,
     reports_access: w.permReportsAccess,
     enter_own_advance: w.permEnterOwnAdvance,
+    edit_worker_closing_cash: w.permEditWorkerClosingCash,
   };
 }
 

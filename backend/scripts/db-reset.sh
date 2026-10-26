@@ -2,7 +2,7 @@
 # تصفير بيانات الاختبار (يبقي البنية والإعدادات) — للتشغيل النظيف قبل e2e.sh
 set -e
 cd "$(dirname "$0")/.."
-cat > /tmp/db-reset.sql << 'EOF'
+cat > scripts/reset.sql << 'EOF'
 DO $$ DECLARE r RECORD;
 BEGIN
   FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname='public'
@@ -11,5 +11,6 @@ BEGIN
   END LOOP;
 END $$;
 EOF
-npx prisma db execute --schema prisma/schema.prisma --file /tmp/db-reset.sql
+npx prisma db execute --schema prisma/schema.prisma --file scripts/reset.sql
+rm -f scripts/reset.sql
 echo "✅ تم تصفير بيانات الاختبار (البنية والإعدادات بقيت)"

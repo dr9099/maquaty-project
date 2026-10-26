@@ -19,6 +19,21 @@ export class SalesService {
     const quantity = new Prisma.Decimal(dto.quantity);
     const amount = new Prisma.Decimal(dto.amount);
 
+    // 0) فحص اعتماد الإغلاق اليومي (BR-057): لا مبيعات بعد الإغلاق
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const closedClosing = await this.prisma.dailyClosing.findFirst({
+      where: {
+        storeOwnerId,
+        workerId: user.role === 'WORKER' ? user.workerId : null,
+        closingDate: today,
+        status: 'CLOSED',
+      },
+    });
+    if (closedClosing) {
+      throw ApiError.conflict('DAY_ALREADY_CLOSED', 'تم اعتماد إغلاق هذا اليوم مسبقاً ولا يمكن تسجيل مبيعات جديدة.');
+    }
+
     // 1) صلاحية الآجل: العامل العادي ممنوع حتى قبل أي فحص آخر (BR-009)
     if (dto.paymentType === PaymentType.CREDIT && user.role === 'WORKER' && !user.isResponsible) {
       throw ApiError.forbidden('PERMISSION_DENIED', 'لا تملك صلاحية البيع بالآجل.');

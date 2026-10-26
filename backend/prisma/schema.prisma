@@ -224,6 +224,7 @@ model Worker {
   permDamagedGoodsEntry               Boolean      @default(true)  @map("perm_damaged_goods_entry")
   permReportsAccess                   Boolean      @default(false) @map("perm_reports_access")
   permEnterOwnAdvance                 Boolean      @default(true)  @map("perm_enter_own_advance") // لا أثر للعامل العادي — للمسؤول فقط (R-10)
+  permEditWorkerClosingCash           Boolean      @default(true)  @map("perm_edit_worker_closing_cash") // R-36: للمسؤول لمساعدة العمال في المطابقة
   lastLoginAt                         DateTime?    @map("last_login_at")
   deletedAt                           DateTime?    @map("deleted_at")
   createdAt                           DateTime     @default(now()) @map("created_at")
@@ -520,12 +521,13 @@ model Employee {
 }
 
 model EmployeeAdvance {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId String @map("store_owner_id") @db.Uuid
-  employeeId String   @map("employee_id") @db.Uuid
-  amount     Decimal  @db.Decimal(12, 2)
-  note       String?
-  createdAt  DateTime @default(now()) @map("created_at")
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId  String   @map("store_owner_id") @db.Uuid
+  employeeId    String   @map("employee_id") @db.Uuid
+  amount        Decimal  @db.Decimal(12, 2)
+  settledAmount Decimal  @default(0) @map("settled_amount") @db.Decimal(12, 2) // تتبع التسوية بنظام FIFO (R-37)
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
 
   employee Employee @relation(fields: [employeeId], references: [id])
 
@@ -533,12 +535,14 @@ model EmployeeAdvance {
 }
 
 model EmployeePayment {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId String @map("store_owner_id") @db.Uuid
-  employeeId String   @map("employee_id") @db.Uuid
-  amount     Decimal  @db.Decimal(12, 2)
-  paidAt     DateTime @default(now()) @map("paid_at")
-  createdAt  DateTime @default(now()) @map("created_at")
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId    String   @map("store_owner_id") @db.Uuid
+  employeeId      String   @map("employee_id") @db.Uuid
+  amount          Decimal  @db.Decimal(12, 2) // إجمالي المستحق المصروف
+  advanceDeducted Decimal  @default(0) @map("advance_deducted") @db.Decimal(12, 2) // ما تم خصمه من السلف (R-37)
+  netPaid         Decimal  @default(0) @map("net_paid") @db.Decimal(12, 2) // الصافي النقدي المدفوع فعلياً
+  paidAt          DateTime @default(now()) @map("paid_at")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   employee Employee @relation(fields: [employeeId], references: [id])
 

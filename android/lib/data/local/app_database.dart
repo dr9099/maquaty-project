@@ -14,7 +14,7 @@ class AppDatabase {
     }
 
     final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'muqawati_${storeOwnerId}.db');
+    final path = p.join(dbPath, 'muqawati_$storeOwnerId.db');
 
     final db = await openDatabase(
       path,

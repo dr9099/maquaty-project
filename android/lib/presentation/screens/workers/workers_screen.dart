@@ -111,6 +111,7 @@ class _WorkersScreenState extends State<WorkersScreen> {
                   final password = passwordController.text;
 
                   if (name.isEmpty || phone.isEmpty || password.isEmpty) return;
+                  final messenger = ScaffoldMessenger.of(context);
                   Navigator.pop(ctx);
 
                   try {
@@ -129,7 +130,7 @@ class _WorkersScreenState extends State<WorkersScreen> {
                     _fetchWorkers();
                   } catch (e) {
                     if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+                      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
                     }
                   }
                 },

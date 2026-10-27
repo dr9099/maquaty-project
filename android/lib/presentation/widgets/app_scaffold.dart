@@ -65,6 +65,22 @@ class AppScaffold extends StatelessWidget {
           children: [
             UserAccountsDrawerHeader(
               decoration: const BoxDecoration(color: AppColors.primary),
+              otherAccountsPictures: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryDark,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.secondary.withOpacity(0.4), width: 1.5),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: Image.asset(
+                    'assets/images/logo.png',
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ],
               currentAccountPicture: CircleAvatar(
                 backgroundColor: AppColors.secondary,
                 child: Text(

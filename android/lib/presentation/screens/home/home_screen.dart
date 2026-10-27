@@ -41,63 +41,62 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
           children: [
-            // بطاقة الترحيب
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppColors.primary,
-                borderRadius: BorderRadius.circular(16),
-              ),
+            // ترويسة الترحيب والشعار (03-home.jpg)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
               child: Row(
                 children: [
-                  CircleAvatar(
-                    radius: 24,
-                    backgroundColor: AppColors.secondary,
-                    child: const Icon(Icons.storefront, color: AppColors.primaryDark),
-                  ),
-                  const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'أهلاً بك، ${account?.displayName ?? "المستخدم"}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
+                        const Text(
+                          'صباح الخير',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppColors.textSecondary,
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          account?.storeName ?? 'متجر مَقوتي',
-                          style: const TextStyle(color: AppColors.surfaceMuted, fontSize: 13),
+                          account?.displayName.isNotEmpty == true
+                              ? 'مرحباً بك، ${account!.displayName}'
+                              : 'مرحباً بك في مَقوتي',
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: AppColors.textPrimary,
+                          ),
                         ),
                       ],
                     ),
                   ),
-                  // مؤشر حالة اليوم
+                  const SizedBox(width: 12),
+                  // شعار التطبيق مَقوتي (03-home.jpg)
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    width: 54,
+                    height: 54,
                     decoration: BoxDecoration(
-                      color: isClosed
-                          ? AppColors.lossRed.withOpacity(0.2)
-                          : AppColors.secondary.withOpacity(0.25),
-                      borderRadius: BorderRadius.circular(20),
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.primary.withOpacity(0.18),
+                          blurRadius: 8,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
                     ),
-                    child: Text(
-                      isClosed ? 'اليوم مغلق' : 'اليوم مفتوح',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: isClosed ? AppColors.lossRed : AppColors.secondary,
-                      ),
+                    clipBehavior: Clip.antiAlias,
+                    child: Image.asset(
+                      'assets/images/logo.png',
+                      fit: BoxFit.cover,
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
 
             // بطاقات الأرقام المالية (الصندوق ومبيعات اليوم)
             Row(

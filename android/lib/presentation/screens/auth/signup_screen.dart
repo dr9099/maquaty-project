@@ -86,22 +86,46 @@ class _SignupScreenState extends State<SignupScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  // الشعار والعنوان (02-signup.jpg)
+                  Center(
+                    child: Container(
+                      width: 86,
+                      height: 86,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(22),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.primary.withOpacity(0.18),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      clipBehavior: Clip.antiAlias,
+                      child: Image.asset(
+                        'assets/images/logo.png',
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
                   const Text(
-                    'تسجيل متجر جديد',
+                    'إنشاء حساب جديد',
                     textAlign: TextAlign.center,
                     style: TextStyle(
-                      fontSize: 24,
+                      fontSize: 28,
                       fontWeight: FontWeight.bold,
                       color: AppColors.primary,
                     ),
                   ),
                   const SizedBox(height: 6),
                   const Text(
-                    'حساب مالك — يمكنك إضافة وإدارة العمال لاحقاً',
+                    'حساب مالك — يضيف المالك العمال لاحقاً',
                     textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+                    style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
                   ),
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 28),
 
                   // الاسم الكامل
                   TextFormField(

@@ -189,9 +189,10 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
                             padding: const EdgeInsets.symmetric(vertical: 16),
                           ),
                           onPressed: () async {
+                            final messenger = ScaffoldMessenger.of(context);
                             final ok = await closingProv.approveClosing();
                             if (ok && mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
+                              messenger.showSnackBar(
                                 const SnackBar(content: Text('تم اعتماد الإغلاق اليومي بنجاح 🔒')),
                               );
                             }

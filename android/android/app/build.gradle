@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.muqawati.app"
+    namespace = "com.kareemtech.maqouti"
     compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.muqawati.app"
+        applicationId = "com.kareemtech.maqouti"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

@@ -40,6 +40,7 @@ export type ApiErrorCode =
   | 'COSTING_METHOD_REQUIRED'
   | 'CURRENCY_CHANGE_LOCKED'
   | 'FRACTIONAL_QUANTITY_NOT_ALLOWED'
+  | 'FRACTIONAL_GRAMS_NOT_ALLOWED'
   | 'INTERNAL_ERROR';
 
 export class ApiError extends Error {

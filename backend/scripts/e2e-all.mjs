@@ -1802,6 +1802,156 @@ async function run() {
   }
 
   // ══════════════════════════════════════════════════════
+  // المرحلة 8: إدخال الوزن بالجرام وعرض الكميات بصيغة عربية مفهومة (feat/gram-weight-input-display)
+  // ══════════════════════════════════════════════════════
+  console.log('\n--- المرحلة 8: إدخال الوزن بالجرام وعرض الكميات بصيغة عربية مفهومة ---');
+
+  // 1. إنشاء صنف وزني جديد بوحدة كيلو لاختبار البيع والشراء بالجرام
+  const gramItemRes = await request('/v1/items', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      name: 'نقفة صعدي رقمي ممتاز',
+      unit: 'كيلو',
+      quantity: 5,
+      costPrice: 15000,
+      sellPrice: 20000,
+      emergencyPriceMode: 'COST_PLUS',
+      emergencyPricePlusFixed: 0,
+    },
+  });
+  check('إنشاء صنف وزني نقفة صعدي بوحدة كيلو 201', 201, gramItemRes.status);
+  const GRAM_ITEM_ID = gramItemRes.data?.item?.id;
+
+  // 2. التحقق من بيع 100 جم بسعر 20,000/كجم = 2,000 ويخزن 0.100 كجم ويعرض "100 جم"
+  const sale100gRes = await request('/v1/sales', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      itemId: GRAM_ITEM_ID,
+      quantity: 100,
+      quantityUnit: 'GRAM',
+      amount: 2000,
+      paymentType: 'CASH',
+    },
+  });
+  check('بيع 100 جم كاش بسعر 2,000 (يعادل 20,000/كجم) 201', 201, sale100gRes.status);
+  check('تخزين كمية البيع في قاعدة البيانات بالكيلو 0.100', 0.100, Number(sale100gRes.data?.sale?.quantity));
+  check('إرجاع نص عرض الكمية بصيغة مفهومة "100 جم"', '100 جم', sale100gRes.data?.sale?.quantity_display);
+  const SALE_100G_ID = sale100gRes.data?.sale?.id;
+
+  // 3. التحقق من بيع 1100 جم بسعر 22,000 ويخزن 1.100 كجم ويعرض "1 كجم و100 جم"
+  const sale1100gRes = await request('/v1/sales', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      itemId: GRAM_ITEM_ID,
+      quantity: 1100,
+      quantityUnit: 'GRAM',
+      amount: 22000,
+      paymentType: 'CASH',
+    },
+  });
+  check('بيع 1100 جم بسعر 22,000 وتخزين 1.100 كجم', 1.100, Number(sale1100gRes.data?.sale?.quantity));
+  check('عرض كمية 1100 جم بصيغة "1 كجم و100 جم"', '1 كجم و100 جم', sale1100gRes.data?.sale?.quantity_display);
+
+  // 4. رفض كسور الجرام في البيع (100.5 جم)
+  const fracGramSaleRes = await request('/v1/sales', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      itemId: GRAM_ITEM_ID,
+      quantity: 100.5,
+      quantityUnit: 'GRAM',
+      amount: 2010,
+      paymentType: 'CASH',
+    },
+  });
+  check('رفض كسر الجرام في البيع 400 FRACTIONAL_GRAMS_NOT_ALLOWED', 'FRACTIONAL_GRAMS_NOT_ALLOWED', fracGramSaleRes.data?.error?.code);
+
+  // 5. التحقق من مرتجع البيع بالجرام (100 جم)
+  const return100gRes = await request('/v1/returns', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      saleId: SALE_100G_ID,
+      quantity: 100,
+      quantityUnit: 'GRAM',
+      reason: 'تجربة مرتجع بالجرام',
+    },
+  });
+  check('مرتجع بيع 100 جم بنجاح 201 وعرض "100 جم"', true, return100gRes.status === 201 && return100gRes.data?.quantity_display === '100 جم');
+
+  // 6. رفض كسر الجرام في مرتجع البيع
+  const fracReturnSaleRes = await request('/v1/returns', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      saleId: sale1100gRes.data?.sale?.id,
+      quantity: 50.5,
+      quantityUnit: 'GRAM',
+      reason: 'كسر مرفوض',
+    },
+  });
+  check('رفض كسر الجرام في مرتجع البيع 400 FRACTIONAL_GRAMS_NOT_ALLOWED', 'FRACTIONAL_GRAMS_NOT_ALLOWED', fracReturnSaleRes.data?.error?.code);
+
+  // 7. شراء 220 جم بتكلفة 15/جم = 3,300 وتكلفة الكيلو 15,000
+  const purchaseGramRes = await request('/v1/purchases', {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      supplierId: SUPPLIER_ID,
+      paymentType: 'CASH',
+      costingMethod: 'WEIGHTED_AVERAGE',
+      items: [
+        {
+          itemId: GRAM_ITEM_ID,
+          itemName: 'نقفة صعدي رقمي ممتاز',
+          unit: 'جرام',
+          baseUnit: 'كيلو',
+          conversionFactor: 0.001,
+          quantity: 220,
+          unitCostPrice: 15,
+          sellPrice: 20000,
+        },
+      ],
+    },
+  });
+  check('فاتورة شراء 220 جم بتكلفة 15/جم وإجمالي 3,300', 201, purchaseGramRes.status);
+  check('عرض كمية سطر الشراء "220 جم"', '220 جم', purchaseGramRes.data?.items?.[0]?.quantity_display);
+  const GRAM_PURCHASE_ID = purchaseGramRes.data?.id;
+  const GRAM_PURCHASE_LINE_ID = purchaseGramRes.data?.items?.[0]?.id;
+
+  // 8. مرتجع شراء بالجرام (220 جم)
+  const purRetGramRes = await request(`/v1/purchases/${GRAM_PURCHASE_ID}/returns`, {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      purchaseItemId: GRAM_PURCHASE_LINE_ID,
+      quantity: 220,
+      quantityUnit: 'GRAM',
+      refundMethod: 'DEBT_REDUCTION',
+      reason: 'مرتجع شراء بالجرام',
+    },
+  });
+  check('مرتجع شراء 220 جم بنجاح وعرض "220 جم"', true, purRetGramRes.status === 201 && purRetGramRes.data?.quantity_display === '220 جم');
+
+  // 9. رفض كسر الجرام في مرتجع الشراء
+  const fracPurRetRes = await request(`/v1/purchases/${GRAM_PURCHASE_ID}/returns`, {
+    method: 'POST',
+    token: OWNER_TOKEN,
+    body: {
+      purchaseItemId: GRAM_PURCHASE_LINE_ID,
+      quantity: 220.5,
+      quantityUnit: 'GRAM',
+      refundMethod: 'DEBT_REDUCTION',
+      reason: 'كسر مرفوض',
+    },
+  });
+  check('رفض كسر الجرام في مرتجع الشراء 400 FRACTIONAL_GRAMS_NOT_ALLOWED', 'FRACTIONAL_GRAMS_NOT_ALLOWED', fracPurRetRes.data?.error?.code);
+  check('رفض كسر الجرام في مرتجع الشراء 400 FRACTIONAL_GRAMS_NOT_ALLOWED', 'FRACTIONAL_GRAMS_NOT_ALLOWED', fracPurRetRes.data?.error?.code);
+
+  // ══════════════════════════════════════════════════════
   // المرحلة 4: المطابقة والإغلاق اليومي (Daily Closing & R-36)
   // ══════════════════════════════════════════════════════
   console.log('\n--- المرحلة 4: المطابقة والإغلاق اليومي R-36 ---');

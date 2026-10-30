@@ -14,7 +14,8 @@ import { SuppliersService } from '../suppliers/suppliers.service';
 import { COSTING_OPTIONS_AR, CURRENCY_METADATA } from '../settings/settings.service';
 import { ApiError } from '../common/api-error';
 import { AuthenticatedUser } from '../common/types';
-import { assertValidQuantityForUnit } from '../common/unit-validation';
+import { assertValidQuantityForUnit, isGramUnit, isKiloUnit, isWeightUnit } from '../common/unit-validation';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import {
   CreatePurchaseDto,
   CreatePurchaseReturnDto,
@@ -1050,7 +1051,35 @@ export class PurchasesService {
       throw ApiError.notFound('بند الفاتورة المحدد غير موجود.');
     }
 
-    const returnQty = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
+    let returnQty: Prisma.Decimal;
+    if (dto.quantityUnit === 'GRAM') {
+      if (Math.abs(dto.quantity - Math.round(dto.quantity)) > 1e-6) {
+        throw ApiError.badRequest(
+          'FRACTIONAL_GRAMS_NOT_ALLOWED',
+          'الكمية المرتجعة بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.',
+        );
+      }
+      if (!isWeightUnit(pItem.unit) && !isWeightUnit(pItem.baseUnit)) {
+        throw ApiError.badRequest(
+          'FRACTIONAL_GRAMS_NOT_ALLOWED',
+          'لا يمكن استخدام الجرام مع صنف لا يُقاس بالوزن.',
+        );
+      }
+      if (isKiloUnit(pItem.unit)) {
+        returnQty = new Prisma.Decimal(dto.quantity).div(1000).toDecimalPlaces(3);
+      } else if (isGramUnit(pItem.unit)) {
+        returnQty = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
+      } else if (isKiloUnit(pItem.baseUnit)) {
+        const returnBaseQtyTmp = new Prisma.Decimal(dto.quantity).div(1000).toDecimalPlaces(3);
+        returnQty = returnBaseQtyTmp.div(pItem.conversionFactor).toDecimalPlaces(3);
+      } else {
+        returnQty = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
+      }
+    } else {
+      assertValidQuantityForUnit(pItem.unit, dto.quantity);
+      returnQty = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
+    }
+
     const maxReturnable = pItem.quantity.minus(pItem.returnedQuantity);
     if (returnQty.gt(maxReturnable)) {
       throw ApiError.badRequest(
@@ -1238,6 +1267,7 @@ export class PurchasesService {
       supplier_id: createdReturn.supplierId,
       item_id: createdReturn.itemId,
       quantity: Number(createdReturn.quantity),
+      quantity_display: formatQuantityDisplay(createdReturn.baseQuantity, pItem.baseUnit),
       base_quantity: Number(createdReturn.baseQuantity),
       unit_price: Number(createdReturn.unitPrice),
       total_amount: Number(createdReturn.totalAmount),
@@ -1289,7 +1319,26 @@ export class PurchasesService {
     totalAmount: Prisma.Decimal;
   } {
     const preliminary = rawLines.map((l) => {
-      const cf = new Prisma.Decimal(l.conversionFactor ?? 1).toDecimalPlaces(3);
+      let conversionFactorNum = l.conversionFactor ?? 1;
+      let baseUnit = (l.baseUnit?.trim() || l.unit.trim());
+
+      if (isGramUnit(l.unit)) {
+        if (Math.abs(Number(l.quantity) - Math.round(Number(l.quantity))) > 1e-6) {
+          throw ApiError.badRequest(
+            'FRACTIONAL_GRAMS_NOT_ALLOWED',
+            `الكمية بالجرام للبند (${l.itemName}) يجب أن تكون رقماً صحيحاً بدون كسور.`,
+          );
+        }
+        if (!l.baseUnit || isKiloUnit(l.baseUnit)) {
+          baseUnit = 'كيلو';
+          conversionFactorNum = 0.001;
+        } else if (isGramUnit(l.baseUnit)) {
+          baseUnit = 'جرام';
+          conversionFactorNum = 1.0;
+        }
+      }
+
+      const cf = new Prisma.Decimal(conversionFactorNum).toDecimalPlaces(3);
       const qty = new Prisma.Decimal(l.quantity).toDecimalPlaces(3);
       const baseQty = qty.mul(cf).toDecimalPlaces(3);
       const unitCost = new Prisma.Decimal(l.unitCostPrice).toDecimalPlaces(2);
@@ -1311,7 +1360,6 @@ export class PurchasesService {
       }
 
       const totalLineCost = gross.plus(lineTax).minus(lineDiscount).toDecimalPlaces(2);
-      const baseUnit = (l.baseUnit?.trim() || l.unit.trim());
       assertValidQuantityForUnit(baseUnit, baseQty);
 
       return {
@@ -1868,6 +1916,7 @@ function serializeInvoiceDetail(inv: {
       unit: it.unit,
       conversion_factor: Number(it.conversionFactor),
       quantity: Number(it.quantity),
+      quantity_display: formatQuantityDisplay(it.baseQuantity, it.baseUnit),
       base_quantity: Number(it.baseQuantity),
       unit_cost_price: Number(it.unitCostPrice),
       tax_amount: Number(it.taxAmount),
@@ -1877,6 +1926,7 @@ function serializeInvoiceDetail(inv: {
       sell_price: Number(it.sellPrice),
       remaining_fifo_qty: Number(it.remainingFifoQty),
       returned_quantity: Number(it.returnedQuantity),
+      returned_quantity_display: formatQuantityDisplay(it.returnedQuantity.mul(it.conversionFactor), it.baseUnit),
     })),
     payments: inv.payments.map((p) => ({
       id: p.id,
@@ -1885,19 +1935,24 @@ function serializeInvoiceDetail(inv: {
       notes: p.notes,
       paid_at: p.paidAt,
     })),
-    returns: inv.returns.map((r) => ({
-      id: r.id,
-      purchase_item_id: r.purchaseItemId,
-      item_id: r.itemId,
-      item_name: r.item.name,
-      quantity: Number(r.quantity),
-      base_quantity: Number(r.baseQuantity),
-      unit_price: Number(r.unitPrice),
-      total_amount: Number(r.totalAmount),
-      refund_method: r.refundMethod,
-      reason: r.reason,
-      returned_at: r.returnedAt,
-    })),
+    returns: inv.returns.map((r) => {
+      const parentLine = inv.items.find((x) => x.id === r.purchaseItemId);
+      const unit = parentLine?.baseUnit ?? 'كيلو';
+      return {
+        id: r.id,
+        purchase_item_id: r.purchaseItemId,
+        item_id: r.itemId,
+        item_name: r.item.name,
+        quantity: Number(r.quantity),
+        quantity_display: formatQuantityDisplay(r.baseQuantity, unit),
+        base_quantity: Number(r.baseQuantity),
+        unit_price: Number(r.unitPrice),
+        total_amount: Number(r.totalAmount),
+        refund_method: r.refundMethod,
+        reason: r.reason,
+        returned_at: r.returnedAt,
+      };
+    }),
   };
 }
 

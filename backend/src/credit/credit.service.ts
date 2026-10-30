@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
 import {
   CreateCreditCustomerDto,
@@ -135,7 +136,9 @@ export class CreditService {
         item_name: s.item.name,
         unit: s.item.unit,
         quantity: Number(s.quantity),
+        quantity_display: formatQuantityDisplay(s.quantity, s.item.unit),
         returned_quantity: round2(returnedQty),
+        returned_quantity_display: formatQuantityDisplay(returnedQty, s.item.unit),
         amount: Number(s.amount),
         returned_amount: round2(returnedAmount),
         net_amount: round2(Number(s.amount) - returnedAmount),
@@ -344,7 +347,7 @@ export class CreditService {
         id: s.id,
         date: s.soldAt,
         type: 'PURCHASE' as const,
-        description: `شراء بالآجل: ${s.item.name} (${Number(s.quantity)} ${s.item.unit})`,
+        description: `شراء بالآجل: ${s.item.name} (${formatQuantityDisplay(s.quantity, s.item.unit)})`,
         debit: Number(s.amount),
         credit: 0,
       })),
@@ -352,7 +355,7 @@ export class CreditService {
         id: r.id,
         date: r.returnedAt,
         type: 'RETURN' as const,
-        description: `مرتجع مبيعات آجل: ${r.sale.item.name} (${Number(r.quantity)} ${r.sale.item.unit})`,
+        description: `مرتجع مبيعات آجل: ${r.sale.item.name} (${formatQuantityDisplay(r.quantity, r.sale.item.unit)})`,
         debit: 0,
         credit: Number(r.amount),
       })),

@@ -5,6 +5,7 @@ import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
 import { assertValidQuantityForUnit } from '../common/unit-validation';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
 import { RecordDamagedGoodsDto } from './dto/damaged-goods.dto';
 
@@ -117,6 +118,7 @@ export class DamagedGoodsService {
         id: created.id,
         item_id: created.itemId,
         quantity: Number(created.quantity),
+        quantity_display: formatQuantityDisplay(created.quantity, item.unit),
         is_damaged: created.isDamaged,
         reason: created.reason,
         photo_url: created.photoUrl,
@@ -156,6 +158,7 @@ export class DamagedGoodsService {
         item_name: r.item.name,
         unit: r.item.unit,
         quantity: qty,
+        quantity_display: formatQuantityDisplay(r.quantity, r.item.unit),
         cost_amount: cost,
         is_damaged: r.isDamaged,
         reason: r.reason,

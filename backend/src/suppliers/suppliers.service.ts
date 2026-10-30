@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
 import { CURRENCY_METADATA } from '../settings/settings.service';
 import {
@@ -548,7 +549,7 @@ export class SuppliersService {
       }),
       this.prisma.purchaseReturn.findMany({
         where: { storeOwnerId, supplierId },
-        include: { item: { select: { name: true } }, purchaseInvoice: { select: { invoiceNumber: true } } },
+        include: { item: { select: { name: true, unit: true } }, purchaseInvoice: { select: { invoiceNumber: true } } },
         orderBy: { returnedAt: 'asc' },
       }),
     ]);
@@ -618,13 +619,14 @@ export class SuppliersService {
     }
 
     for (const r of returns) {
+      const formattedQty = formatQuantityDisplay(r.baseQuantity, r.item.unit);
       if (r.refundMethod === 'DEBT_REDUCTION') {
         allEvents.push({
           id: r.id,
           date: r.returnedAt,
           type: 'PURCHASE_RETURN',
           reference: r.purchaseInvoice.invoiceNumber,
-          description: `مرتجع مشتريات (${r.item.name}) — خصم من الرصيد`,
+          description: `مرتجع مشتريات (${r.item.name} — ${formattedQty}) — خصم من الرصيد`,
           debit: Number(r.totalAmount),
           credit: 0,
         });
@@ -634,7 +636,7 @@ export class SuppliersService {
           date: r.returnedAt,
           type: 'PURCHASE_RETURN',
           reference: r.purchaseInvoice.invoiceNumber,
-          description: `مرتجع مشتريات مسترد نقداً (${r.item.name}) — لا يؤثر على الذمة`,
+          description: `مرتجع مشتريات مسترد نقداً (${r.item.name} — ${formattedQty}) — لا يؤثر على الذمة`,
           debit: 0,
           credit: 0,
         });

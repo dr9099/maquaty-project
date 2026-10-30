@@ -5,6 +5,7 @@ import {
   IsArray,
   IsBoolean,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsNumber,
@@ -297,6 +298,10 @@ export class CreatePurchaseReturnDto {
   @IsNumber({}, { message: 'الكمية المرتجعة مطلوبة.' })
   @Min(0.001, { message: 'الكمية المرتجعة يجب أن تكون أكبر من صفر.' })
   quantity: number;
+
+  @IsOptional()
+  @IsIn(['KILO', 'GRAM'], { message: 'وحدة الإدخال يجب أن تكون KILO أو GRAM.' })
+  quantityUnit?: 'KILO' | 'GRAM';
 
   @IsEnum(PurchaseRefundMethod, {
     message: 'طريقة استرداد المرتجع يجب أن تكون DEBT_REDUCTION أو CASH_REFUND.',

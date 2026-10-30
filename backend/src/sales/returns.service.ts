@@ -4,7 +4,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
-import { assertValidQuantityForUnit } from '../common/unit-validation';
+import { assertValidQuantityForUnit, isGramUnit, isKiloUnit, isWeightUnit } from '../common/unit-validation';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
 import { CreateReturnDto } from './dto/create-return.dto';
 
@@ -29,7 +30,35 @@ export class ReturnsService {
     });
 
     if (!sale) throw ApiError.notFound('عملية البيع غير موجودة.');
-    assertValidQuantityForUnit(sale.item.unit, dto.quantity);
+
+    let returnQtyDecimal: Prisma.Decimal;
+    let requestedQty: number;
+
+    if (dto.quantityUnit === 'GRAM') {
+      if (Math.abs(dto.quantity - Math.round(dto.quantity)) > 1e-6) {
+        throw ApiError.badRequest(
+          'FRACTIONAL_GRAMS_NOT_ALLOWED',
+          'الكمية المرتجعة بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.',
+        );
+      }
+      if (!isWeightUnit(sale.item.unit)) {
+        throw ApiError.badRequest(
+          'FRACTIONAL_GRAMS_NOT_ALLOWED',
+          'لا يمكن استخدام الجرام مع صنف لا يُقاس بالوزن.',
+        );
+      }
+      if (isKiloUnit(sale.item.unit)) {
+        returnQtyDecimal = new Prisma.Decimal(dto.quantity).div(1000).toDecimalPlaces(3);
+        requestedQty = returnQtyDecimal.toNumber();
+      } else {
+        returnQtyDecimal = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
+        requestedQty = returnQtyDecimal.toNumber();
+      }
+    } else {
+      assertValidQuantityForUnit(sale.item.unit, dto.quantity);
+      returnQtyDecimal = new Prisma.Decimal(dto.quantity);
+      requestedQty = Number(dto.quantity);
+    }
 
     // 1) فحص ملكية العملية (R-20 / BR-066)
     if (user.role === 'WORKER') {
@@ -69,7 +98,6 @@ export class ReturnsService {
       _sum: { quantity: true },
     });
     const previouslyReturnedQty = existingReturns._sum.quantity ? Number(existingReturns._sum.quantity) : 0;
-    const requestedQty = Number(dto.quantity);
     const saleQty = Number(sale.quantity);
 
     if (round2(previouslyReturnedQty + requestedQty) > saleQty) {
@@ -83,7 +111,6 @@ export class ReturnsService {
         ? round2(Number(dto.amount))
         : round2((Number(sale.amount) * requestedQty) / saleQty);
 
-    const returnQtyDecimal = new Prisma.Decimal(dto.quantity);
     const returnAmountDecimal = new Prisma.Decimal(resolvedAmount);
 
     return this.prisma.$transaction(async (tx) => {
@@ -176,6 +203,7 @@ export class ReturnsService {
         return_id: createdReturn.id,
         sale_id: sale.id,
         quantity: Number(createdReturn.quantity),
+        quantity_display: formatQuantityDisplay(createdReturn.quantity, sale.item.unit),
         amount: Number(createdReturn.amount),
         returned_at: createdReturn.returnedAt,
       };

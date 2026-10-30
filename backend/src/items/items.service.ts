@@ -3,6 +3,7 @@ import { EmergencyPriceMode, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApiError } from '../common/api-error';
 import { assertValidQuantityForUnit } from '../common/unit-validation';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { COSTING_OPTIONS_AR } from '../settings/settings.service';
 import { CreateItemDto, UpdateItemDto } from './dto/items.dto';
 
@@ -188,6 +189,7 @@ export class ItemsService {
         name: it.name,
         unit: it.unit,
         remaining_qty: it.quantity,
+        quantity_display: formatQuantityDisplay(it.quantity, it.unit),
         sell_price: it.sellPrice,
       };
       if (!opts.isWorker || opts.showSellPrices) {
@@ -284,6 +286,7 @@ function toOwnerView(it: {
     name: it.name,
     unit: it.unit,
     quantity: it.quantity,
+    quantity_display: formatQuantityDisplay(it.quantity, it.unit),
     cost_price: it.costPrice,
     sell_price: it.sellPrice,
     remaining_value: mul(it.quantity, it.sellPrice),

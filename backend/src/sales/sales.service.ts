@@ -3,7 +3,8 @@ import { PaymentType, Prisma, StoreOwnerStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { ApiError } from '../common/api-error';
-import { assertValidQuantityForUnit } from '../common/unit-validation';
+import { assertValidQuantityForUnit, isGramUnit, isKiloUnit, isWeightUnit } from '../common/unit-validation';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
@@ -17,8 +18,17 @@ export class SalesService {
 
   async create(user: AuthenticatedUser, dto: CreateSaleDto) {
     const storeOwnerId = user.storeOwnerId!;
-    const quantity = new Prisma.Decimal(dto.quantity);
+    let quantity = new Prisma.Decimal(dto.quantity);
     const amount = new Prisma.Decimal(dto.amount);
+
+    if (dto.quantityUnit === 'GRAM') {
+      if (Math.abs(dto.quantity - Math.round(dto.quantity)) > 1e-6) {
+        throw ApiError.badRequest(
+          'FRACTIONAL_GRAMS_NOT_ALLOWED',
+          'الكمية بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.',
+        );
+      }
+    }
 
     // 0) فحص اعتماد الإغلاق اليومي (BR-057): لا مبيعات بعد الإغلاق
     const today = new Date();
@@ -101,7 +111,21 @@ export class SalesService {
       const item = lockedItems[0];
       if (!item || item.deleted_at) throw ApiError.notFound('الصنف غير موجود.');
 
-      assertValidQuantityForUnit(item.unit, quantity);
+      if (dto.quantityUnit === 'GRAM') {
+        if (!isWeightUnit(item.unit)) {
+          throw ApiError.badRequest(
+            'FRACTIONAL_GRAMS_NOT_ALLOWED',
+            'لا يمكن استخدام الجرام مع صنف لا يُقاس بالوزن.',
+          );
+        }
+        if (isKiloUnit(item.unit)) {
+          quantity = new Prisma.Decimal(dto.quantity).div(1000).toDecimalPlaces(3);
+        } else {
+          quantity = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
+        }
+      } else {
+        assertValidQuantityForUnit(item.unit, quantity);
+      }
 
       if (quantity.gt(item.quantity)) {
         // رفض فوري دون أي حفظ أو قيد — أول من يحصل على القفل ينفّذ
@@ -307,11 +331,11 @@ export class SalesService {
         accountStatus = nextStatus;
       }
 
-      return { sale, accountStatus, mergedItemName: item.name };
+      return { sale, accountStatus, mergedItemName: item.name, itemUnit: item.unit };
     });
 
     return {
-      sale: serializeSale(result.sale),
+      sale: serializeSale(result.sale, result.itemUnit),
       account_status: result.accountStatus,
       item_name: result.mergedItemName,
     };
@@ -335,13 +359,19 @@ export class SalesService {
       select: { id: true, name: true, unit: true },
     });
     const nameById = new Map(items.map((i) => [i.id, i]));
-    const lines = rows.map((r) => ({
-      item_id: r.itemId,
-      name: nameById.get(r.itemId)?.name ?? '',
-      unit: nameById.get(r.itemId)?.unit ?? '',
-      total_amount: r._sum.amount?.toDecimalPlaces(2) ?? new Prisma.Decimal(0),
-      total_quantity: r._sum.quantity?.toDecimalPlaces(3) ?? new Prisma.Decimal(0),
-    }));
+    const lines = rows.map((r) => {
+      const it = nameById.get(r.itemId);
+      const unit = it?.unit ?? '';
+      const totalQty = r._sum.quantity?.toDecimalPlaces(3) ?? new Prisma.Decimal(0);
+      return {
+        item_id: r.itemId,
+        name: it?.name ?? '',
+        unit,
+        total_amount: r._sum.amount?.toDecimalPlaces(2) ?? new Prisma.Decimal(0),
+        total_quantity: totalQty,
+        quantity_display: formatQuantityDisplay(totalQty, unit),
+      };
+    });
     const total = lines.reduce((s, l) => s.add(l.total_amount), new Prisma.Decimal(0)).toDecimalPlaces(2);
     return { items: lines, total };
   }
@@ -386,7 +416,9 @@ export class SalesService {
         id: s.id,
         type: 'SALE' as const,
         item_name: s.item.name,
+        unit: s.item.unit,
         quantity: s.quantity,
+        quantity_display: formatQuantityDisplay(s.quantity, s.item.unit),
         amount: s.amount,
         payment_type: s.paymentType,
         wallet_name: s.wallet?.name ?? null,
@@ -508,14 +540,18 @@ function endOfDay(d: Date): Date {
   return x;
 }
 
-function serializeSale(s: {
-  id: string; quantity: Prisma.Decimal; amount: Prisma.Decimal; paymentType: string;
-  isEmergencySale: boolean; emergencyOverridePrice: Prisma.Decimal | null;
-  priceDifferenceLoss: Prisma.Decimal; soldAt: Date;
-}) {
+function serializeSale(
+  s: {
+    id: string; quantity: Prisma.Decimal; amount: Prisma.Decimal; paymentType: string;
+    isEmergencySale: boolean; emergencyOverridePrice: Prisma.Decimal | null;
+    priceDifferenceLoss: Prisma.Decimal; soldAt: Date;
+  },
+  unit?: string,
+) {
   return {
     id: s.id,
     quantity: s.quantity,
+    quantity_display: formatQuantityDisplay(s.quantity, unit),
     amount: s.amount,
     payment_type: s.paymentType,
     is_emergency_sale: s.isEmergencySale,

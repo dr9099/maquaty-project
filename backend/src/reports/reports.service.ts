@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
 import { CURRENCY_METADATA } from '../settings/settings.service';
 import {
@@ -447,6 +448,7 @@ export class ReportsService {
             item_name: s.item.name,
             unit: s.item.unit,
             quantity: Number(s.quantity),
+            quantity_display: formatQuantityDisplay(s.quantity, s.item.unit),
             amount: Number(s.amount),
             payment_type: s.paymentType,
             sold_by: s.worker?.fullName ?? 'المالك',
@@ -542,6 +544,7 @@ export class ReportsService {
               purchase_unit: l.unit,
               conversion_factor: Number(l.conversionFactor),
               quantity: Number(netBaseQty.toDecimalPlaces(3)),
+              quantity_display: formatQuantityDisplay(netBaseQty, l.baseUnit),
               cost_price: Number(l.effectiveBaseUnitCost),
               total_purchase_cost: Number(netLineCost),
               invoice_date: l.purchaseInvoice.invoiceDate,

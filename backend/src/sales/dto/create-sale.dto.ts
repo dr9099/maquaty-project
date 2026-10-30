@@ -1,4 +1,4 @@
-import { IsBoolean, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString, IsUUID, Min } from 'class-validator';
 import { PaymentType } from '@prisma/client';
 
 export class CreateSaleDto {
@@ -8,6 +8,10 @@ export class CreateSaleDto {
   @IsNumber()
   @IsPositive({ message: 'الكمية يجب أن تكون أكبر من صفر.' })
   quantity!: number;
+
+  @IsOptional()
+  @IsIn(['KILO', 'GRAM'], { message: 'وحدة الإدخال يجب أن تكون KILO أو GRAM.' })
+  quantityUnit?: 'KILO' | 'GRAM';
 
   @IsNumber()
   @IsPositive({ message: 'المبلغ يجب أن يكون أكبر من صفر.' })

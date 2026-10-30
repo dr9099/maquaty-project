@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
+import '../../core/utils/quantity_formatter.dart';
 import '../../data/local/app_database.dart';
 import 'store_settings_provider.dart';
 
@@ -213,6 +214,7 @@ class PurchaseItemModel {
   final String unit;
   final double conversionFactor;
   final double quantity;
+  final String? quantityDisplay;
   final double baseQuantity;
   final double unitCostPrice;
   final double taxAmount;
@@ -221,6 +223,7 @@ class PurchaseItemModel {
   final double effectiveBaseUnitCost;
   final double sellPrice;
   final double returnedQuantity;
+  final String? returnedQuantityDisplay;
 
   const PurchaseItemModel({
     required this.id,
@@ -230,6 +233,7 @@ class PurchaseItemModel {
     required this.unit,
     required this.conversionFactor,
     required this.quantity,
+    this.quantityDisplay,
     required this.baseQuantity,
     required this.unitCostPrice,
     required this.taxAmount,
@@ -238,21 +242,36 @@ class PurchaseItemModel {
     required this.effectiveBaseUnitCost,
     required this.sellPrice,
     required this.returnedQuantity,
+    this.returnedQuantityDisplay,
   });
+
+  String get displayQuantity =>
+      quantityDisplay ?? formatQuantityDisplay(baseQuantity, unit: baseUnit);
+
+  String get displayReturnedQuantity =>
+      returnedQuantityDisplay ??
+      formatQuantityDisplay(returnedQuantity * conversionFactor, unit: baseUnit);
 
   double get remainingReturnableQty =>
       (quantity - returnedQuantity) > 0 ? (quantity - returnedQuantity) : 0.0;
 
   factory PurchaseItemModel.fromJson(Map<String, dynamic> json) {
+    final bUnit = (json['base_unit'] ?? 'حبة').toString();
+    final factor = (json['conversion_factor'] as num?)?.toDouble() ?? 1.0;
+    final qty = (json['quantity'] as num?)?.toDouble() ?? 0.0;
+    final bQty = (json['base_quantity'] as num?)?.toDouble() ?? (qty * factor);
+    final retQty = (json['returned_quantity'] as num?)?.toDouble() ?? 0.0;
+
     return PurchaseItemModel(
       id: (json['id'] ?? '').toString(),
       itemId: json['item_id']?.toString(),
       itemName: (json['item_name'] ?? '').toString(),
-      baseUnit: (json['base_unit'] ?? 'حبة').toString(),
+      baseUnit: bUnit,
       unit: (json['unit'] ?? 'حبة').toString(),
-      conversionFactor: (json['conversion_factor'] as num?)?.toDouble() ?? 1.0,
-      quantity: (json['quantity'] as num?)?.toDouble() ?? 0.0,
-      baseQuantity: (json['base_quantity'] as num?)?.toDouble() ?? 0.0,
+      conversionFactor: factor,
+      quantity: qty,
+      quantityDisplay: json['quantity_display'] ?? formatQuantityDisplay(bQty, unit: bUnit),
+      baseQuantity: bQty,
       unitCostPrice: (json['unit_cost_price'] as num?)?.toDouble() ?? 0.0,
       taxAmount: (json['tax_amount'] as num?)?.toDouble() ?? 0.0,
       discountAmount: (json['discount_amount'] as num?)?.toDouble() ?? 0.0,
@@ -260,7 +279,9 @@ class PurchaseItemModel {
       effectiveBaseUnitCost:
           (json['effective_base_unit_cost'] as num?)?.toDouble() ?? 0.0,
       sellPrice: (json['sell_price'] as num?)?.toDouble() ?? 0.0,
-      returnedQuantity: (json['returned_quantity'] as num?)?.toDouble() ?? 0.0,
+      returnedQuantity: retQty,
+      returnedQuantityDisplay: json['returned_quantity_display'] ??
+          formatQuantityDisplay(retQty * factor, unit: bUnit),
     );
   }
 }
@@ -270,6 +291,7 @@ class PurchaseReturnModel {
   final String purchaseItemId;
   final String itemName;
   final double quantity;
+  final String? quantityDisplay;
   final double totalAmount;
   final String refundMethod;
   final String reason;
@@ -280,18 +302,24 @@ class PurchaseReturnModel {
     required this.purchaseItemId,
     required this.itemName,
     required this.quantity,
+    this.quantityDisplay,
     required this.totalAmount,
     required this.refundMethod,
     required this.reason,
     required this.returnedAt,
   });
 
+  String get displayQuantity =>
+      quantityDisplay ?? formatQuantityDisplay(quantity, unit: 'كيلو');
+
   factory PurchaseReturnModel.fromJson(Map<String, dynamic> json) {
+    final qty = (json['quantity'] as num?)?.toDouble() ?? 0.0;
     return PurchaseReturnModel(
       id: (json['id'] ?? '').toString(),
       purchaseItemId: (json['purchase_item_id'] ?? '').toString(),
       itemName: (json['item_name'] ?? '').toString(),
-      quantity: (json['quantity'] as num?)?.toDouble() ?? 0.0,
+      quantity: qty,
+      quantityDisplay: json['quantity_display'] ?? formatQuantityDisplay(qty, unit: 'كيلو'),
       totalAmount: (json['total_amount'] as num?)?.toDouble() ?? 0.0,
       refundMethod: (json['refund_method'] ?? 'DEBT_REDUCTION').toString(),
       reason: (json['reason'] ?? '').toString(),
@@ -782,6 +810,7 @@ class PurchasesProvider with ChangeNotifier {
     required String invoiceId,
     required String purchaseItemId,
     required double quantity,
+    String? quantityUnit,
     required String refundMethod, // DEBT_REDUCTION | CASH_REFUND
     required String reason,
     String? storeOwnerId,
@@ -796,6 +825,7 @@ class PurchasesProvider with ChangeNotifier {
       'id': returnId,
       'purchaseItemId': purchaseItemId,
       'quantity': quantity,
+      if (quantityUnit != null) 'quantityUnit': quantityUnit,
       'refundMethod': refundMethod,
       'reason': reason.trim(),
     };

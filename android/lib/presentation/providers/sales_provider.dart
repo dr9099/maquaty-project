@@ -1,11 +1,14 @@
 import 'package:flutter/foundation.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
+import '../../core/utils/quantity_formatter.dart';
 
 class SaleRecord {
   final String id;
   final String itemName;
+  final String unit;
   final double quantity;
+  final String? quantityDisplay;
   final double amount;
   final String paymentType;
   final bool isEmergencySale;
@@ -17,7 +20,9 @@ class SaleRecord {
   SaleRecord({
     required this.id,
     required this.itemName,
+    this.unit = 'كيلو',
     required this.quantity,
+    this.quantityDisplay,
     required this.amount,
     required this.paymentType,
     this.isEmergencySale = false,
@@ -27,11 +32,18 @@ class SaleRecord {
     this.workerName,
   });
 
+  String get displayQuantity =>
+      quantityDisplay ?? formatQuantityDisplay(quantity, unit: unit);
+
   factory SaleRecord.fromJson(Map<String, dynamic> json) {
+    final unitVal = (json['item']?['unit'] ?? json['unit'] ?? 'كيلو').toString();
+    final qtyVal = (json['quantity'] as num?)?.toDouble() ?? 0.0;
     return SaleRecord(
       id: json['id'],
       itemName: json['item']?['name'] ?? json['itemName'] ?? 'صنف',
-      quantity: (json['quantity'] as num?)?.toDouble() ?? 0.0,
+      unit: unitVal,
+      quantity: qtyVal,
+      quantityDisplay: json['quantity_display'] ?? formatQuantityDisplay(qtyVal, unit: unitVal),
       amount: (json['amount'] as num?)?.toDouble() ?? 0.0,
       paymentType: json['payment_type'] ?? 'CASH',
       isEmergencySale: json['is_emergency_sale'] ?? false,
@@ -76,6 +88,7 @@ class SalesProvider with ChangeNotifier {
   Future<bool> createSale({
     required String itemId,
     required double quantity,
+    String? quantityUnit,
     required double amount,
     required String paymentType,
     String? walletId,
@@ -95,6 +108,7 @@ class SalesProvider with ChangeNotifier {
         data: {
           'itemId': itemId,
           'quantity': quantity,
+          if (quantityUnit != null) 'quantityUnit': quantityUnit,
           'amount': amount,
           'paymentType': paymentType,
           if (walletId != null) 'walletId': walletId,
@@ -120,6 +134,7 @@ class SalesProvider with ChangeNotifier {
   Future<bool> processReturn({
     required String saleId,
     required double quantity,
+    String? quantityUnit,
     required String reason,
   }) async {
     _isLoading = true;
@@ -132,6 +147,7 @@ class SalesProvider with ChangeNotifier {
         data: {
           'saleId': saleId,
           'quantity': quantity,
+          if (quantityUnit != null) 'quantityUnit': quantityUnit,
           'reason': reason,
         },
       );

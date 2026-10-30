@@ -1,12 +1,14 @@
 import 'package:flutter/foundation.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
+import '../../core/utils/quantity_formatter.dart';
 
 class ItemModel {
   final String id;
   final String name;
   final String unit;
   final double quantity;
+  final String? quantityDisplay;
   final double sellPrice;
   final double? costPrice;
   final String emergencyPriceMode;
@@ -18,6 +20,7 @@ class ItemModel {
     required this.name,
     this.unit = 'حبة',
     required this.quantity,
+    this.quantityDisplay,
     required this.sellPrice,
     this.costPrice,
     this.emergencyPriceMode = 'MANUAL_RANGE',
@@ -61,12 +64,20 @@ class ItemModel {
   bool get isWeightUnit => isWeightUnitName(unit);
   bool get isKiloUnit => isKiloUnitName(unit);
 
+  String get displayQuantity =>
+      quantityDisplay ?? formatQuantityDisplay(quantity, unit: unit);
+
   factory ItemModel.fromJson(Map<String, dynamic> json) {
+    final unitVal = (json['unit'] ?? 'حبة').toString();
+    final qtyVal =
+        ((json['quantity'] ?? json['remaining_qty']) as num?)?.toDouble() ?? 0.0;
     return ItemModel(
       id: (json['id'] ?? json['item_id'] ?? '').toString(),
       name: (json['name'] ?? '').toString(),
-      unit: (json['unit'] ?? 'حبة').toString(),
-      quantity: ((json['quantity'] ?? json['remaining_qty']) as num?)?.toDouble() ?? 0.0,
+      unit: unitVal,
+      quantity: qtyVal,
+      quantityDisplay: json['quantity_display'] ??
+          formatQuantityDisplay(qtyVal, unit: unitVal),
       sellPrice: (json['sell_price'] as num?)?.toDouble() ?? 0.0,
       costPrice: (json['cost_price'] as num?)?.toDouble(),
       emergencyPriceMode: json['emergency_price_mode'] ?? 'MANUAL_RANGE',

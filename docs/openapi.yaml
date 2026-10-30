@@ -184,7 +184,12 @@ components:
       required: [item_id, quantity, amount, payment_type]
       properties:
         item_id: { type: string, format: uuid }
-        quantity: { type: number }
+        quantity: { type: number, description: "الكمية بالكيلو أو بالجرام (حسب quantity_unit)" }
+        quantity_unit:
+          type: string
+          enum: [KILO, GRAM]
+          default: KILO
+          description: "وحدة الإدخال للأصناف الوزنية: KILO أو GRAM (ترفض كسور الجرام بـ 400 FRACTIONAL_GRAMS_NOT_ALLOWED)"
         amount: { type: number }
         payment_type: { type: string, enum: [CASH, ELECTRONIC, CREDIT] }
         wallet_id: { type: string, format: uuid, nullable: true }
@@ -203,7 +208,8 @@ components:
         id: { type: string, format: uuid }
         item_id: { type: string, format: uuid }
         worker_id: { type: string, format: uuid, nullable: true }
-        quantity: { type: number }
+        quantity: { type: number, description: "الكمية المخزنة بالكيلو بدقة 3 منازل عشرية" }
+        quantity_display: { type: string, description: "صيغة العرض العربية المفهومة (مثل: 220 جم، 1 كجم و100 جم)" }
         amount: { type: number }
         payment_type: { type: string, enum: [CASH, ELECTRONIC, CREDIT] }
         is_emergency_sale: { type: boolean }

@@ -179,6 +179,7 @@ Base URL (مثال): `https://api.maqouti.app/v1`
 {
   "item_id": "uuid",
   "quantity": 2,
+  "quantity_unit": "KILO | GRAM (اختياري، الافتراضي KILO للحفاظ على التوافق الرجعي)",
   "amount": 6000,
   "payment_type": "CASH | ELECTRONIC | CREDIT",
   "wallet_id": "uuid (إلزامي إذا ELECTRONIC)",
@@ -191,27 +192,28 @@ Base URL (مثال): `https://api.maqouti.app/v1`
 ```
 **Business Logic بالترتيب:**
 1. إن `payment_type=CREDIT` والطالب عامل بدون `is_responsible` → `403 PERMISSION_DENIED`.
-2. قفل صف `items` (`SELECT ... FOR UPDATE`) ضمن معاملة ذرّية، ثم فحص الكمية المتوفرة → وإلا `409 INSUFFICIENT_STOCK`.
-3. إن `is_emergency_sale=true`: فحص `emergency_reason` غير فارغ، وفحص `emergency_override_price` يحترم `items.emergency_price_mode` (الحد الأدنى والأقصى كلاهما عند تحديدهما، حتى لو ترك المالك الحد الأدنى فارغاً في النمط المفتوح) → وإلا `400`.
-4. إن `CREDIT`: فحص سقف الائتمان (Hard Block) → وإلا `409 CREDIT_LIMIT_EXCEEDED`.
-5. خصم الكمية من `items.quantity` (ضمن نفس القفل).
-6. إنشاء سجل `sales`.
-7. إنشاء قيود `ledger_entries` (بيع عادي + قيد خسارة منفصل إن `price_difference_loss > 0`).
-8. زيادة `store_owners.trial_sales_used` بمقدار 1 طالما `trial_sales_used < trial_sales_limit` (شرط مستقل عن الحالة — يشمل `TRIAL` و`TRIAL_WARNING`).
-**Response 201:** سجل البيع الكامل.
-**Errors:** `403 PERMISSION_DENIED`, `409 INSUFFICIENT_STOCK`, `409 CREDIT_LIMIT_EXCEEDED`, `400 MISSING_DEPOSIT_ATTACHMENT`, `400 EMERGENCY_REASON_REQUIRED`, `400 EMERGENCY_PRICE_BELOW_MINIMUM`, `400 EMERGENCY_PRICE_ABOVE_MAXIMUM`, `423 ACCOUNT_LOCKED`.
+2. فحص وحدة الإدخال: إذا تم إرسال `quantity_unit=GRAM` على صنف وزني (كيلو)، يُلزم أن تكون الكمية بالجرام عدداً صحيحاً دون أي كسور (`Math.round(quantity) === quantity`) وإلا يُرفض بـ `400 FRACTIONAL_GRAMS_NOT_ALLOWED` لأن أصغر وحدة مادية هي 1 جرام صحيح. وتُحوّل الكمية تلقائياً إلى كيلو بقسمتها على 1000 للتخزين الموحد (`0.100` كجم). أما الأصناف غير الوزنية (حبة، ربطة، حزمة) فلا يقبل معها `GRAM`.
+3. قفل صف `items` (`SELECT ... FOR UPDATE`) ضمن معاملة ذرّية، ثم فحص الكمية المتوفرة → وإلا `409 INSUFFICIENT_STOCK`.
+4. إن `is_emergency_sale=true`: فحص `emergency_reason` غير فارغ، وفحص `emergency_override_price` يحترم `items.emergency_price_mode` (الحد الأدنى والأقصى كلاهما عند تحديدهما، حتى لو ترك المالك الحد الأدنى فارغاً في النمط المفتوح) → وإلا `400`.
+5. إن `CREDIT`: فحص سقف الائتمان (Hard Block) → وإلا `409 CREDIT_LIMIT_EXCEEDED`.
+6. خصم الكمية من `items.quantity` (ضمن نفس القفل).
+7. إنشاء سجل `sales` متضمناً `quantity_display` بصيغة عربية مفهومة (مثل "100 جم"، "1 كجم"، "1 كجم و100 جم").
+8. إنشاء قيود `ledger_entries` (بيع عادي + قيد خسارة منفصل إن `price_difference_loss > 0`).
+9. زيادة `store_owners.trial_sales_used` بمقدار 1 طالما `trial_sales_used < trial_sales_limit` (شرط مستقل عن الحالة — يشمل `TRIAL` و`TRIAL_WARNING`).
+**Response 201:** سجل البيع الكامل مع `quantity_display`.
+**Errors:** `403 PERMISSION_DENIED`, `409 INSUFFICIENT_STOCK`, `409 CREDIT_LIMIT_EXCEEDED`, `400 FRACTIONAL_GRAMS_NOT_ALLOWED`, `400 MISSING_DEPOSIT_ATTACHMENT`, `400 EMERGENCY_REASON_REQUIRED`, `400 EMERGENCY_PRICE_BELOW_MINIMUM`, `400 EMERGENCY_PRICE_ABOVE_MAXIMUM`, `423 ACCOUNT_LOCKED`.
 
 ### `GET /sales/summary-by-item?date=`
-للمالك: مجمّع لكل العمال. للعامل: عملياته فقط. **Auth:** `STORE_OWNER | WORKER`.
+للمالك: مجمّع لكل العمال مع `quantity_display`. للعامل: عملياته فقط. **Auth:** `STORE_OWNER | WORKER`.
 
 ### `GET /sales/log?date=&worker_id=`
-`worker_id` اختياري ومتاح فقط لطلب المالك. **Auth:** `STORE_OWNER | WORKER`.
+`worker_id` اختياري ومتاح فقط لطلب المالك، ويعيد `quantity_display` لكل عملية. **Auth:** `STORE_OWNER | WORKER`.
 
 ### `POST /returns`
-تسجيل مرتجع. **Auth:** `STORE_OWNER | WORKER`. عامل يستطيع تسجيل مرتجع فقط لعملية `sales.worker_id` يطابق هويته هو؛ المالك لأي عملية. يُعيد الكمية للمخزون تلقائياً وينشئ قيداً عكسياً.
+تسجيل مرتجع. **Auth:** `STORE_OWNER | WORKER`. عامل يستطيع تسجيل مرتجع فقط لعملية `sales.worker_id` يطابق هويته هو؛ المالك لأي عملية. يُعيد الكمية للمخزون تلقائياً وينشئ قيداً عكسياً. يدعم `quantity_unit: "KILO" | "GRAM"` ويرفض كسور الجرام بـ `400 FRACTIONAL_GRAMS_NOT_ALLOWED`. يعيد `quantity_display` بصيغة مفهومة.
 **قيد زمني صارم (R-20):** المرتجع مسموح حصراً لعملية بيع من **نفس اليوم الحالي** وقبل اعتماد إغلاق ذلك اليوم — بعد مرور يوم البيع أو اعتماده يُرفض المرتجع قطعياً (طبيعة القات).
 **مدخل الواجهة:** نافذة مرتجع تُفتح من الضغط على عملية بيع في شاشة `OPERATIONS_LOG` (تظهر لعمليات اليوم فقط).
-**Errors:** `403 NOT_OWN_SALE`, `404`, `400 RETURN_QUANTITY_EXCEEDED` (كمية مرتجعة أكبر من المباع), `400 RETURN_DAY_PASSED` (عملية ليوم سابق), `409 DAY_ALREADY_CLOSED`.
+**Errors:** `403 NOT_OWN_SALE`, `404`, `400 RETURN_QUANTITY_EXCEEDED` (كمية مرتجعة أكبر من المباع), `400 FRACTIONAL_GRAMS_NOT_ALLOWED`, `400 RETURN_DAY_PASSED` (عملية ليوم سابق), `409 DAY_ALREADY_CLOSED`.
 
 ---
 

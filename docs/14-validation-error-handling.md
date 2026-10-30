@@ -70,6 +70,7 @@
 | `409 INVOICE_CANNOT_VOID` | `POST /purchases/:id/void` | محاولة إلغاء فاتورة بعد وجود سداد أو مرتجع أو انخفاض مخزون الصنف دون الكمية المشتراة |
 | `409 PURCHASE_ITEM_HAS_SALES` | `POST /purchases/:id/returns` | منع مرتجع المشتريات لحدوث عملية بيع لاحقة على الصنف (R-41) |
 | `400 RETURN_QTY_EXCEEDS_PURCHASED` | `POST /purchases/:id/returns` | كمية مرتجع المشتريات تتجاوز الكمية المشتراة المتبقية في الفاتورة |
+| `400 FRACTIONAL_GRAMS_NOT_ALLOWED` | `POST /sales`, `POST /returns`, `POST /purchases/:id/returns` | لا يُسمح بكسور الجرام؛ يجب أن تكون الكمية بالجرام عدداً صحيحاً (أصغر وحدة هي 1 جرام) |
 | `409 COSTING_METHOD_REQUIRED` | `POST /purchases`, `/post` | اشتراط تحديد طريقة احتساب التكلفة عند الشراء المتكرر لنفس الصنف في نفس اليوم أو اختلاف السعر (R-40) |
 | `409 CURRENCY_CHANGE_LOCKED` | `PATCH /settings` | منع تغيير عملة المتجر بعد تسجيل حركات مالية فعلية (R-42) |
 

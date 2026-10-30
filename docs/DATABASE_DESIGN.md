@@ -450,12 +450,59 @@
 
 ---
 
+## 13.5 جداول المشتريات والموردين والعملة (R-38..R-43)
+
+- **توسعات الجداول القائمة:**
+  - `store_owners`: إضافة `currency` (`YER` | `SAR` | `USD`، افتراضي `YER`) و`default_costing_method` (`WEIGHTED_AVERAGE` | `LAST_PRICE` | `FIFO`، افتراضي `WEIGHTED_AVERAGE`) و`allow_responsible_purchases` (`BOOLEAN DEFAULT false` للتحكم بصلاحية المشتريات والموردين للعامل المسؤول R-38).
+  - `wallets`: إضافة `account_code TEXT NULL` للربط بالحساب الفرعي `11xx` في دليل الحسابات.
+  - إضافة `wallet_settled BOOLEAN NOT NULL DEFAULT false` و`wallet_settlement_id UUID FK NULL` على كافة حركات المحافظ الإلكترونية الـ 11 لتتبع التسوية والمطابقة مع المزود.
+  - `sales`: إضافة `cogs_amount DECIMAL(12,2) NULL` لحفظ تكلفة البضاعة المباعة الفعلية لكل عملية بيع (خصوصاً عند استهلاك طبقات `FIFO` أو تغير التكلفة منتصف اليوم).
+  - `LedgerReferenceType`: إضافة `PURCHASE`, `PURCHASE_VOID`, `SUPPLIER_OPENING_BALANCE`, `PURCHASE_PAYMENT`, `PURCHASE_RETURN`, `OWNER_DEPOSIT`, `OWNER_WITHDRAWAL`, `WALLET_SETTLEMENT`, `EXPENSE_SETTLEMENT`.
+  - `chart_of_accounts`: زراعة ودعم الحسابات القياسية:
+    - `2000 — الموردون / الذمم الدائنة (LIABILITY)`
+    - `2100 — مصروفات مستحقة (LIABILITY)` (المصروفات الآجلة غير المسددة)
+    - `3100 — جاري المالك (مسحوبات وإيداعات المالك) (EQUITY)` (معزول عن الأرباح التشغيلية)
+    - `5700 — مصروفات أخرى (EXPENSE)` (مصروفات المحل التشغيلية كالأكياس والثلج مستقلة عن الخدمات 5300)
+
+- **`owner_transactions` (إيداعات ومسحوبات المالك — R-46):**
+  - `id UUID PK`, `store_owner_id UUID FK`, `type ('DEPOSIT'|'WITHDRAWAL')`, `amount DECIMAL(12,2) > 0`, `payment_method ('CASH'|'ELECTRONIC')`, `wallet_id UUID FK NULL`, `attachment_url`, `note`, `wallet_settled`, `wallet_settlement_id`, `transacted_at TIMESTAMPTZ`.
+
+- **`wallet_settlements` (مطابقة وتسوية المحافظ الإلكترونية — R-46):**
+  - `id UUID PK`, `store_owner_id UUID FK`, `wallet_id UUID FK`, `book_balance_before`, `actual_provider_balance`, `difference`, `cash_out_to_drawer`, `book_balance_after`, `settled_operations_count INT`, `status ('MATCHED'|'DISCREPANCY_RESOLVED')`, `notes`, `settled_at TIMESTAMPTZ`.
+
+- **`expense_settlements` (سداد المصروفات المستحقة — R-47):**
+  - `id UUID PK`, `store_owner_id UUID FK`, `target_type ('RENT'|'UTILITY'|'SALARY')`, `rent_record_id`, `utility_payment_id`, `employee_payment_id`, `amount DECIMAL(12,2) > 0`, `payment_method ('CASH'|'ELECTRONIC')`, `wallet_id UUID FK NULL`, `attachment_url`, `note`, `wallet_settled`, `paid_at TIMESTAMPTZ`.
+
+- **`suppliers` (الموردون):**
+  - `id UUID PK`, `store_owner_id UUID FK NOT NULL`, `name`, `phone`, `address`, `contact_person`, `tax_number`, `notes`, `opening_balance DECIMAL(12,2)`, `opening_balance_settled DECIMAL(12,2)`, `current_balance DECIMAL(12,2)`, `credit_limit DECIMAL(12,2)`, `payment_terms_days INT`, `status ('ACTIVE'|'SUSPENDED')`, `deleted_at TIMESTAMPTZ`.
+  - فهارس فريدة جزئية (`WHERE deleted_at IS NULL`) لعدم تكرار الاسم أو الهاتف ضمن نفس المتجر، وقيود `CHECK` تمنع الأرصدة السالبة.
+
+- **`purchase_invoices` (فواتير المشتريات):**
+  - `id UUID PK`, `store_owner_id UUID FK`, `supplier_id UUID FK`, `invoice_number` (فريد لكل متجر `PUR-YYYYMMDD-NNNN`), `supplier_invoice_ref`, `invoice_date DATE`, `due_date DATE`, `payment_type ('CASH'|'ELECTRONIC'|'CREDIT'|'PARTIAL')`, `wallet_id UUID FK NULL`, `subtotal`, `tax_amount`, `discount_amount`, `total_amount`, `paid_amount`, `settled_amount`, `remaining_amount`, `currency`, `attachment_url`, `notes`, `status ('DRAFT'|'POSTED'|'VOIDED')`, `costing_method_used`, `daily_closing_id UUID FK NULL`, `posted_at`, `voided_at`, `void_reason`.
+
+- **`purchase_items` (بنود الفاتورة وطبقات FIFO):**
+  - `id UUID PK`, `purchase_invoice_id UUID FK`, `store_owner_id UUID FK`, `item_id UUID FK NULL`, `item_name`, `base_unit`, `unit`, `conversion_factor DECIMAL(12,4)`, `quantity DECIMAL(12,3)`, `base_quantity DECIMAL(12,3)`, `unit_cost_price`, `tax_amount`, `discount_amount`, `total_line_cost`, `effective_base_unit_cost`, `sell_price`, `remaining_fifo_qty DECIMAL(12,3)`, `returned_quantity DECIMAL(12,3)` (`CHECK (returned_quantity <= quantity)`).
+
+- **`supplier_payments` (سندات سداد الموردين):**
+  - `id UUID PK`, `store_owner_id UUID FK`, `supplier_id UUID FK`, `purchase_invoice_id UUID FK NULL`, `amount DECIMAL(12,2) > 0`, `payment_method ('CASH'|'ELECTRONIC')`, `wallet_id UUID FK NULL`, `receipt_attachment_url`, `notes`, `daily_closing_id UUID FK NULL`, `paid_at TIMESTAMPTZ`.
+
+- **`purchase_returns` (مرتجعات المشتريات):**
+  - `id UUID PK`, `store_owner_id UUID FK`, `purchase_invoice_id UUID FK`, `purchase_item_id UUID FK`, `supplier_id UUID FK`, `item_id UUID FK`, `quantity`, `base_quantity`, `unit_price`, `total_amount`, `refund_method ('DEBT_REDUCTION'|'CASH_REFUND')`, `reason`, `daily_closing_id UUID FK NULL`, `returned_at TIMESTAMPTZ`.
+
+---
+
 ## 14. ERD مختصر (Mermaid)
 
 ```mermaid
 erDiagram
     STORE_OWNERS ||--o{ WORKERS : "يدير"
     STORE_OWNERS ||--o{ ITEMS : "يملك"
+    STORE_OWNERS ||--o{ SUPPLIERS : "يتعامل مع"
+    SUPPLIERS ||--o{ PURCHASE_INVOICES : "يورّد"
+    PURCHASE_INVOICES ||--|{ PURCHASE_ITEMS : "تضم بنوداً"
+    ITEMS ||--o{ PURCHASE_ITEMS : "تغذي المخزون"
+    SUPPLIERS ||--o{ SUPPLIER_PAYMENTS : "يُسدَّد له"
+    PURCHASE_INVOICES ||--o{ PURCHASE_RETURNS : "مرتجع شراء"
     STORE_OWNERS ||--o{ SUBSCRIPTIONS : "يشترك"
     STORE_OWNERS ||--o{ DEVICES : "مسجل عليه"
     WORKERS ||--o{ DEVICES : "مسجل عليه"

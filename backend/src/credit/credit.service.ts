@@ -118,25 +118,33 @@ export class CreditService {
     await this.mustGetOwned(storeOwnerId, id);
 
     const sales = await this.prisma.sale.findMany({
-      where: { creditCustomerId: id, storeOwnerId },
+      where: { creditCustomerId: id, storeOwnerId, paymentType: 'CREDIT' },
       include: {
         item: { select: { name: true, unit: true } },
         worker: { select: { fullName: true } },
+        returns: { select: { quantity: true, amount: true } },
       },
       orderBy: { soldAt: 'desc' },
     });
 
-    return sales.map((s) => ({
-      sale_id: s.id,
-      item_name: s.item.name,
-      unit: s.item.unit,
-      quantity: Number(s.quantity),
-      amount: Number(s.amount),
-      is_emergency_sale: s.isEmergencySale,
-      emergency_reason: s.emergencyReason,
-      sold_by: s.worker?.fullName ?? 'المالك',
-      sold_at: s.soldAt,
-    }));
+    return sales.map((s) => {
+      const returnedQty = s.returns.reduce((acc, r) => acc + Number(r.quantity), 0);
+      const returnedAmount = s.returns.reduce((acc, r) => acc + Number(r.amount), 0);
+      return {
+        sale_id: s.id,
+        item_name: s.item.name,
+        unit: s.item.unit,
+        quantity: Number(s.quantity),
+        returned_quantity: round2(returnedQty),
+        amount: Number(s.amount),
+        returned_amount: round2(returnedAmount),
+        net_amount: round2(Number(s.amount) - returnedAmount),
+        is_emergency_sale: s.isEmergencySale,
+        emergency_reason: s.emergencyReason,
+        sold_by: s.worker?.fullName ?? 'المالك',
+        sold_at: s.soldAt,
+      };
+    });
   }
 
   async getPayments(storeOwnerId: string, id: string) {
@@ -146,6 +154,7 @@ export class CreditService {
       where: { creditCustomerId: id, storeOwnerId },
       include: {
         worker: { select: { fullName: true } },
+        wallet: { select: { id: true, name: true } },
       },
       orderBy: { paidAt: 'desc' },
     });
@@ -155,6 +164,9 @@ export class CreditService {
       amount: Number(p.amount),
       payment_method: p.paymentMethod,
       wallet_id: p.walletId,
+      wallet_name: p.wallet?.name ?? null,
+      attachment_url: p.attachmentUrl,
+      notes: p.notes,
       collected_by: p.worker?.fullName ?? 'المالك',
       paid_at: p.paidAt,
     }));
@@ -173,20 +185,62 @@ export class CreditService {
       throw ApiError.badRequest('VALIDATION_ERROR', 'مبلغ الدفعة يجب أن يكون أكبر من صفر.');
     }
 
+    if (dto.paymentMethod !== 'CASH' && dto.paymentMethod !== 'ELECTRONIC') {
+      throw ApiError.badRequest('VALIDATION_ERROR', 'طريقة الدفع يجب أن تكون CASH أو ELECTRONIC فقط.');
+    }
+
+    const actorWorkerId = user.role === 'WORKER' ? user.workerId ?? null : null;
+    const today = startOfDay(new Date());
+
+    if (dto.paymentMethod === 'CASH') {
+      const closedClosing = await this.prisma.dailyClosing.findFirst({
+        where: {
+          storeOwnerId,
+          workerId: actorWorkerId,
+          closingDate: today,
+          status: 'CLOSED',
+        },
+      });
+      if (closedClosing) {
+        throw ApiError.conflict(
+          'DAY_ALREADY_CLOSED',
+          'تم اعتماد إغلاق الصندوق لهذا اليوم مسبقاً ولا يمكن تسجيل تحصيل نقدي جديد.',
+        );
+      }
+    }
+
+    const resolvedAttachment = (dto.attachmentUrl ?? dto.depositAttachmentUrl)?.trim() || null;
+
     let walletAccountCode: string | null = null;
     if (dto.paymentMethod === 'ELECTRONIC') {
-      if (!dto.walletId) {
-        throw ApiError.badRequest('VALIDATION_ERROR', 'اختيار المحفظة إلزامي للدفع الإلكتروني.');
+      if (!dto.walletId || !resolvedAttachment) {
+        throw ApiError.badRequest(
+          'MISSING_DEPOSIT_ATTACHMENT',
+          'اختيار المحفظة الإلكترونية وإرفاق صورة إيصال الإيداع إلزاميان عند سداد دين العميل إلكترونياً.',
+        );
       }
       const wallet = await this.prisma.wallet.findFirst({
         where: { id: dto.walletId, storeOwnerId, isActive: true },
       });
       if (!wallet) throw ApiError.notFound('المحفظة غير موجودة.');
-      const walletAccount = await this.prisma.chartOfAccount.findFirst({
-        where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet.name}` } },
-        select: { code: true },
-      });
-      walletAccountCode = walletAccount?.code ?? '1100';
+      if (wallet.accountCode) {
+        walletAccountCode = wallet.accountCode;
+      } else {
+        const walletAccount = await this.prisma.chartOfAccount.findFirst({
+          where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet.name}` } },
+          select: { code: true },
+        });
+        walletAccountCode = walletAccount?.code ?? '1100';
+      }
+    }
+
+    const currentDebt = await this.calculateCustomerDebt(customerId);
+    if (dto.amount > currentDebt + 0.005) {
+      throw ApiError.badRequest(
+        'VALIDATION_ERROR',
+        'مبلغ السداد يتجاوز الرصيد المستحق حالياً على العميل.',
+        { current_debt: currentDebt },
+      );
     }
 
     const amountDecimal = new Prisma.Decimal(dto.amount);
@@ -199,7 +253,9 @@ export class CreditService {
           amount: amountDecimal,
           paymentMethod: dto.paymentMethod,
           walletId: dto.walletId ?? null,
-          workerId: user.role === 'WORKER' ? user.workerId : null,
+          attachmentUrl: resolvedAttachment,
+          notes: dto.notes?.trim() || null,
+          workerId: actorWorkerId,
           paidAt: new Date(),
         },
       });
@@ -208,7 +264,7 @@ export class CreditService {
       const debitAccount = dto.paymentMethod === 'CASH' ? '1000' : (walletAccountCode ?? '1100');
       await this.accounting.createBalancedEntries(tx, {
         storeOwnerId,
-        entryDate: new Date(),
+        entryDate: today,
         referenceType: 'CREDIT_PAYMENT',
         referenceId: createdPayment.id,
         lines: [
@@ -227,6 +283,9 @@ export class CreditService {
       customer_id: customerId,
       amount: Number(payment.amount),
       payment_method: payment.paymentMethod,
+      wallet_id: payment.walletId,
+      attachment_url: payment.attachmentUrl,
+      notes: payment.notes,
       remaining_debt: newDebt,
       paid_at: payment.paidAt,
     };
@@ -235,14 +294,14 @@ export class CreditService {
   async getStatement(storeOwnerId: string, id: string) {
     const customer = await this.mustGetOwned(storeOwnerId, id);
 
-    const [sales, payments] = await Promise.all([
+    const [sales, payments, creditReturns] = await Promise.all([
       this.prisma.sale.findMany({
-        where: { creditCustomerId: id, storeOwnerId },
+        where: { creditCustomerId: id, storeOwnerId, paymentType: 'CREDIT' },
         select: {
           id: true,
           amount: true,
           soldAt: true,
-          item: { select: { name: true } },
+          item: { select: { name: true, unit: true } },
           quantity: true,
         },
       }),
@@ -252,7 +311,21 @@ export class CreditService {
           id: true,
           amount: true,
           paymentMethod: true,
+          wallet: { select: { name: true } },
           paidAt: true,
+        },
+      }),
+      this.prisma.return.findMany({
+        where: {
+          storeOwnerId,
+          sale: { creditCustomerId: id, paymentType: 'CREDIT' },
+        },
+        select: {
+          id: true,
+          amount: true,
+          quantity: true,
+          returnedAt: true,
+          sale: { select: { item: { select: { name: true, unit: true } } } },
         },
       }),
     ]);
@@ -260,7 +333,7 @@ export class CreditService {
     type Tx = {
       id: string;
       date: Date;
-      type: 'PURCHASE' | 'PAYMENT';
+      type: 'PURCHASE' | 'PAYMENT' | 'RETURN';
       description: string;
       debit: number;
       credit: number;
@@ -271,15 +344,26 @@ export class CreditService {
         id: s.id,
         date: s.soldAt,
         type: 'PURCHASE' as const,
-        description: `شراء: ${s.item.name} (${Number(s.quantity)})`,
+        description: `شراء بالآجل: ${s.item.name} (${Number(s.quantity)} ${s.item.unit})`,
         debit: Number(s.amount),
         credit: 0,
+      })),
+      ...creditReturns.map((r) => ({
+        id: r.id,
+        date: r.returnedAt,
+        type: 'RETURN' as const,
+        description: `مرتجع مبيعات آجل: ${r.sale.item.name} (${Number(r.quantity)} ${r.sale.item.unit})`,
+        debit: 0,
+        credit: Number(r.amount),
       })),
       ...payments.map((p) => ({
         id: p.id,
         date: p.paidAt,
         type: 'PAYMENT' as const,
-        description: `سداد دفعة (${p.paymentMethod === 'CASH' ? 'نقداً' : 'إلكتروني'})`,
+        description:
+          p.paymentMethod === 'CASH'
+            ? 'سداد دفعة (نقداً)'
+            : `سداد دفعة (محفظة${p.wallet?.name ? `: ${p.wallet.name}` : ''})`,
         debit: 0,
         credit: Number(p.amount),
       })),
@@ -289,7 +373,7 @@ export class CreditService {
 
     let runningBalance = 0;
     const ledger = combined.map((entry) => {
-      runningBalance += entry.debit - entry.credit;
+      runningBalance = round2(runningBalance + entry.debit - entry.credit);
       return {
         ...entry,
         running_balance: runningBalance,
@@ -309,20 +393,25 @@ export class CreditService {
   }
 
   private async calculateCustomerDebt(customerId: string): Promise<number> {
-    const [salesAgg, paymentsAgg] = await Promise.all([
+    const [salesAgg, paymentsAgg, returnsAgg] = await Promise.all([
       this.prisma.sale.aggregate({
-        where: { creditCustomerId: customerId },
+        where: { creditCustomerId: customerId, paymentType: 'CREDIT' },
         _sum: { amount: true },
       }),
       this.prisma.creditPayment.aggregate({
         where: { creditCustomerId: customerId },
         _sum: { amount: true },
       }),
+      this.prisma.return.aggregate({
+        where: { sale: { creditCustomerId: customerId, paymentType: 'CREDIT' } },
+        _sum: { amount: true },
+      }),
     ]);
 
     const salesTotal = salesAgg._sum.amount ? Number(salesAgg._sum.amount) : 0;
     const paymentsTotal = paymentsAgg._sum.amount ? Number(paymentsAgg._sum.amount) : 0;
-    return salesTotal - paymentsTotal;
+    const returnsTotal = returnsAgg._sum.amount ? Number(returnsAgg._sum.amount) : 0;
+    return round2(salesTotal - paymentsTotal - returnsTotal);
   }
 
   private async mustGetOwned(storeOwnerId: string, id: string) {
@@ -332,4 +421,14 @@ export class CreditService {
     if (!customer) throw ApiError.notFound('عميل الآجل غير موجود.');
     return customer;
   }
+}
+
+function startOfDay(d: Date): Date {
+  const c = new Date(d);
+  c.setHours(0, 0, 0, 0);
+  return c;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }

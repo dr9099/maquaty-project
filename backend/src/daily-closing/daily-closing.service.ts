@@ -8,6 +8,7 @@ import { AuthenticatedUser } from '../common/types';
 import { UpdateActualCashDto } from './dto/daily-closing.dto';
 
 // خدمة المطابقة اليومية والإغلاق — API_SPEC القسم 9 / R-04 / R-21 / R-36 / BR-026..030
+// قاعدة صندوق اليوم (Conflict 3): يبدأ صندوق كل يوم جديد من 0 دون ترحيل رصيد اليوم السابق، ويحسب صافي الحركات النقدية لليوم نفسه فقط.
 @Injectable()
 export class DailyClosingService {
   constructor(
@@ -38,14 +39,44 @@ export class DailyClosingService {
     const todayDate = startOfDay(new Date());
     const tomorrowDate = new Date(todayDate.getTime() + 24 * 60 * 60 * 1000);
 
-    // 1) حساب الكاش المتوقع: مبيعات نقدية + دفعات آجل نقدية محصلة لنفس الحساب واليوم (BR-027)
-    const [cashSalesAgg, cashPaymentsAgg] = await Promise.all([
+    // 1) حساب الكاش المتوقع لليوم الحالي بدءاً من صفر (0):
+    // + مبيعات نقدية - مرتجعات مبيعات نقدية + تحصيلات ديون عملاء نقدية
+    // - مشتريات نقدية - سدادات موردين نقدية + استردادات مرتجعات مشتريات نقدية
+    // - مصروفات وسلف نقدية + إيداعات المالك النقدية - مسحوبات المالك النقدية + سحوبات المحافظ للصندوق
+    const [
+      cashSalesAgg,
+      cashSaleReturnsAgg,
+      cashPaymentsAgg,
+      cashPurchasesAgg,
+      cashSupplierPaymentsAgg,
+      cashPurchaseRefundsAgg,
+      workerCashAdvancesAgg,
+      empCashAdvancesAgg,
+      empCashSalariesAgg,
+      cashRentsAgg,
+      cashUtilitiesAgg,
+      cashAccrualSettlementsAgg,
+      ownerCashDepositsAgg,
+      ownerCashWithdrawalsAgg,
+      walletCashOutsAgg,
+    ] = await Promise.all([
       this.prisma.sale.aggregate({
         where: {
           storeOwnerId,
           workerId: targetWorkerId,
           paymentType: 'CASH',
           soldAt: { gte: todayDate, lt: tomorrowDate },
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.return.aggregate({
+        where: {
+          storeOwnerId,
+          returnedAt: { gte: todayDate, lt: tomorrowDate },
+          sale: {
+            paymentType: 'CASH',
+            workerId: targetWorkerId,
+          },
         },
         _sum: { amount: true },
       }),
@@ -58,11 +89,169 @@ export class DailyClosingService {
         },
         _sum: { amount: true },
       }),
+      this.prisma.purchaseInvoice.aggregate({
+        where: {
+          storeOwnerId,
+          workerId: targetWorkerId,
+          status: 'POSTED',
+          invoiceDate: todayDate,
+          walletId: null,
+          paidAmount: { gt: 0 },
+        },
+        _sum: { paidAmount: true },
+      }),
+      this.prisma.supplierPayment.aggregate({
+        where: {
+          storeOwnerId,
+          workerId: targetWorkerId,
+          paymentMethod: 'CASH',
+          paidAt: { gte: todayDate, lt: tomorrowDate },
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.purchaseReturn.aggregate({
+        where: {
+          storeOwnerId,
+          workerId: targetWorkerId,
+          refundMethod: 'CASH_REFUND',
+          returnedAt: { gte: todayDate, lt: tomorrowDate },
+        },
+        _sum: { totalAmount: true },
+      }),
+      targetWorkerId !== null
+        ? this.prisma.workerAdvance.aggregate({
+            where: {
+              storeOwnerId,
+              workerId: targetWorkerId,
+              paymentMethod: 'CASH',
+              recordedAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { amount: true },
+          })
+        : Promise.resolve({ _sum: { amount: null } }),
+      targetWorkerId === null
+        ? this.prisma.employeeAdvance.aggregate({
+            where: {
+              storeOwnerId,
+              paymentMethod: 'CASH',
+              createdAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { amount: true },
+          })
+        : Promise.resolve({ _sum: { amount: null } }),
+      targetWorkerId === null
+        ? this.prisma.employeePayment.aggregate({
+            where: {
+              storeOwnerId,
+              paymentMethod: 'CASH',
+              paidAmount: { gt: 0 },
+              paidAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { paidAmount: true },
+          })
+        : Promise.resolve({ _sum: { paidAmount: null } }),
+      targetWorkerId === null
+        ? this.prisma.rentRecord.aggregate({
+            where: {
+              storeOwnerId,
+              paymentMethod: 'CASH',
+              paidAmount: { gt: 0 },
+              paidAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { paidAmount: true },
+          })
+        : Promise.resolve({ _sum: { paidAmount: null } }),
+      targetWorkerId === null
+        ? this.prisma.utilityPayment.aggregate({
+            where: {
+              storeOwnerId,
+              paymentMethod: 'CASH',
+              paidAmount: { gt: 0 },
+              paidAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { paidAmount: true },
+          })
+        : Promise.resolve({ _sum: { paidAmount: null } }),
+      targetWorkerId === null
+        ? this.prisma.expenseSettlement.aggregate({
+            where: {
+              storeOwnerId,
+              paymentMethod: 'CASH',
+              paidAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { amount: true },
+          })
+        : Promise.resolve({ _sum: { amount: null } }),
+      targetWorkerId === null
+        ? this.prisma.ownerTransaction.aggregate({
+            where: {
+              storeOwnerId,
+              type: 'DEPOSIT',
+              paymentMethod: 'CASH',
+              transactedAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { amount: true },
+          })
+        : Promise.resolve({ _sum: { amount: null } }),
+      targetWorkerId === null
+        ? this.prisma.ownerTransaction.aggregate({
+            where: {
+              storeOwnerId,
+              type: 'WITHDRAWAL',
+              paymentMethod: 'CASH',
+              transactedAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { amount: true },
+          })
+        : Promise.resolve({ _sum: { amount: null } }),
+      targetWorkerId === null
+        ? this.prisma.walletSettlement.aggregate({
+            where: {
+              storeOwnerId,
+              cashOutToDrawer: { gt: 0 },
+              settledAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { cashOutToDrawer: true },
+          })
+        : Promise.resolve({ _sum: { cashOutToDrawer: null } }),
     ]);
 
-    const cashSalesTotal = cashSalesAgg._sum.amount ? Number(cashSalesAgg._sum.amount) : 0;
-    const cashPaymentsTotal = cashPaymentsAgg._sum.amount ? Number(cashPaymentsAgg._sum.amount) : 0;
-    const expectedCash = cashSalesTotal + cashPaymentsTotal;
+    const openingCash = 0; // صندوق اليوم يبدأ دائماً من 0 لكل يوم جديد
+    const cashSalesTotal = Number(cashSalesAgg._sum.amount ?? 0);
+    const cashSaleReturnsTotal = Number(cashSaleReturnsAgg._sum.amount ?? 0);
+    const cashPaymentsTotal = Number(cashPaymentsAgg._sum.amount ?? 0);
+    const cashPurchasesTotal = Number(cashPurchasesAgg._sum.paidAmount ?? 0);
+    const cashSupplierPaymentsTotal = Number(cashSupplierPaymentsAgg._sum.amount ?? 0);
+    const cashPurchaseRefundsTotal = Number(cashPurchaseRefundsAgg._sum.totalAmount ?? 0);
+
+    const workerCashAdvancesTotal = Number(workerCashAdvancesAgg._sum.amount ?? 0);
+    const ownerCashExpensesTotal = round2(
+      Number(empCashAdvancesAgg._sum.amount ?? 0) +
+        Number(empCashSalariesAgg._sum.paidAmount ?? 0) +
+        Number(cashRentsAgg._sum.paidAmount ?? 0) +
+        Number(cashUtilitiesAgg._sum.paidAmount ?? 0) +
+        Number(cashAccrualSettlementsAgg._sum.amount ?? 0),
+    );
+    const cashExpensesAndAdvancesTotal =
+      targetWorkerId === null ? ownerCashExpensesTotal : workerCashAdvancesTotal;
+
+    const ownerCashDepositsTotal = Number(ownerCashDepositsAgg._sum.amount ?? 0);
+    const ownerCashWithdrawalsTotal = Number(ownerCashWithdrawalsAgg._sum.amount ?? 0);
+    const walletCashOutsTotal = Number(walletCashOutsAgg._sum.cashOutToDrawer ?? 0);
+
+    const expectedCash = round2(
+      openingCash +
+        cashSalesTotal -
+        cashSaleReturnsTotal +
+        cashPaymentsTotal +
+        cashPurchaseRefundsTotal +
+        ownerCashDepositsTotal +
+        walletCashOutsTotal -
+        cashPurchasesTotal -
+        cashSupplierPaymentsTotal -
+        cashExpensesAndAdvancesTotal -
+        ownerCashWithdrawalsTotal,
+    );
 
     // 2) البحث عن سجل الإغلاق أو إنشاؤه
     let closing = await this.prisma.dailyClosing.findFirst({
@@ -81,13 +270,13 @@ export class DailyClosingService {
           closingDate: todayDate,
           actualCash: new Prisma.Decimal(0),
           expectedCash: new Prisma.Decimal(expectedCash),
-          difference: new Prisma.Decimal(-expectedCash),
+          difference: new Prisma.Decimal(round2(0 - expectedCash)),
           status: 'OPEN',
         },
       });
     } else if (closing.status === 'OPEN') {
-      // تحديث الكاش المتوقع إن تغيرت المبيعات قبل الاعتماد
-      const diff = Number(closing.actualCash) - expectedCash;
+      // تحديث الكاش المتوقع إن تغيرت حركات اليوم قبل الاعتماد
+      const diff = round2(Number(closing.actualCash) - expectedCash);
       closing = await this.prisma.dailyClosing.update({
         where: { id: closing.id },
         data: {
@@ -133,16 +322,26 @@ export class DailyClosingService {
       closing_date: closing.closingDate,
       worker_id: closing.workerId,
       status: closing.status,
+      opening_cash: openingCash,
       actual_cash: Number(closing.actualCash),
       expected_cash: Number(closing.expectedCash),
       difference: Number(closing.difference),
       summary: {
+        opening_cash: openingCash,
         total_sales: allSales._sum.amount ? Number(allSales._sum.amount) : 0,
         sales_count: allSales._count.id,
         cash_sales: cashSalesTotal,
+        cash_sale_returns: cashSaleReturnsTotal,
         electronic_sales: allElectronicSales._sum.amount ? Number(allElectronicSales._sum.amount) : 0,
         credit_sales: allCreditSales._sum.amount ? Number(allCreditSales._sum.amount) : 0,
         collected_cash_payments: cashPaymentsTotal,
+        cash_purchases: cashPurchasesTotal,
+        cash_supplier_payments: cashSupplierPaymentsTotal,
+        cash_purchase_refunds: cashPurchaseRefundsTotal,
+        cash_expenses: cashExpensesAndAdvancesTotal,
+        owner_cash_deposits: ownerCashDepositsTotal,
+        owner_cash_withdrawals: ownerCashWithdrawalsTotal,
+        wallet_cash_outs: walletCashOutsTotal,
       },
     };
   }
@@ -194,6 +393,8 @@ export class DailyClosingService {
         difference: differenceDecimal,
       },
     });
+
+    void ip;
 
     return {
       closing_id: updated.id,
@@ -254,6 +455,27 @@ export class DailyClosingService {
         data: { dailyClosingId: approved.id },
       });
 
+      await tx.purchaseInvoice.updateMany({
+        where: {
+          storeOwnerId,
+          workerId: closing.workerId,
+          invoiceDate: todayDate,
+          status: 'POSTED',
+          dailyClosingId: null,
+        },
+        data: { dailyClosingId: approved.id },
+      });
+
+      await tx.supplierPayment.updateMany({
+        where: {
+          storeOwnerId,
+          workerId: closing.workerId,
+          paidAt: { gte: todayDate, lt: tomorrowDate },
+          dailyClosingId: null,
+        },
+        data: { dailyClosingId: approved.id },
+      });
+
       // 3) قيود الإقفال المحاسبية المرحلتين (R-21 / 12-business-logic §7)
       const diff = Number(approved.difference);
 
@@ -291,6 +513,7 @@ export class DailyClosingService {
         select: {
           amount: true,
           quantity: true,
+          cogsAmount: true,
           priceDifferenceLoss: true,
           item: { select: { costPrice: true } },
         },
@@ -302,7 +525,8 @@ export class DailyClosingService {
 
       for (const s of closedSales) {
         totalSalesRevenue += Number(s.amount);
-        totalCogs += Number(s.quantity) * Number(s.item.costPrice);
+        totalCogs +=
+          s.cogsAmount !== null ? Number(s.cogsAmount) : Number(s.quantity) * Number(s.item.costPrice);
         totalEmergencyLoss += Number(s.priceDifferenceLoss);
       }
 
@@ -312,10 +536,6 @@ export class DailyClosingService {
 
       // إذا كانت هناك مبيعات، نقوم بتصفيرها دورياً لحساب 3900
       if (totalSalesRevenue > 0 || totalCogs > 0 || totalEmergencyLoss > 0) {
-        // تصفير المبيعات: مدين 4000
-        // تصفير التكلفة: دائن 5000
-        // تصفير الخسارة: دائن 5450
-        // الفارق يذهب لـ 3900 الأرباح المحتجزة
         const closingLines: Array<{ accountCode: string; debit?: number; credit?: number; description: string }> = [];
 
         if (totalSalesRevenue > 0) {
@@ -333,10 +553,8 @@ export class DailyClosingService {
         const netDifference = round2(debitSum - creditSum);
 
         if (netDifference > 0) {
-          // صافي ربح -> دائن 3900
           closingLines.push({ accountCode: '3900', credit: netDifference, description: 'صافي أرباح اليوم المقفلة' });
         } else if (netDifference < 0) {
-          // صافي خسارة -> مدين 3900
           closingLines.push({ accountCode: '3900', debit: Math.abs(netDifference), description: 'صافي خسائر اليوم المقفلة' });
         }
 
@@ -356,6 +574,7 @@ export class DailyClosingService {
         targetType: 'daily_closing',
         targetId: approved.id,
         newValue: {
+          opening_cash: 0,
           actual_cash: Number(approved.actualCash),
           expected_cash: Number(approved.expectedCash),
           difference: diff,
@@ -368,6 +587,7 @@ export class DailyClosingService {
         closing_id: approved.id,
         status: approved.status,
         approved_at: approved.approvedAt,
+        opening_cash: 0,
         actual_cash: Number(approved.actualCash),
         expected_cash: Number(approved.expectedCash),
         difference: diff,

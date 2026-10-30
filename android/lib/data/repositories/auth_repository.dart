@@ -25,14 +25,18 @@ class AuthRepository {
     final user = data['user'] ?? {};
 
     final account = AuthAccount(
-      id: user['storeOwnerId'] ?? user['id'],
+      id: (user['id'] ?? user['storeOwnerId'] ?? data['user_id'] ?? '').toString(),
       phone: phone,
-      displayName: user['name'] ?? '',
-      storeName: user['storeName'] ?? 'متجر مَقوتي',
-      role: user['role'] ?? 'WORKER',
-      isResponsibleWorker: user['isResponsibleWorker'] ?? false,
-      accessToken: data['accessToken'],
-      refreshToken: data['refreshToken'],
+      displayName: (user['name'] ?? '').toString(),
+      storeName: (user['storeName'] ?? 'متجر مَقوتي').toString(),
+      role: (user['role'] ?? data['role'] ?? 'WORKER').toString(),
+      isResponsibleWorker: user['isResponsibleWorker'] == true ||
+          data['is_responsible'] == true,
+      allowResponsiblePurchases: user['allowResponsiblePurchases'] == true ||
+          data['allow_responsible_purchases'] == true,
+      accessToken: (data['access_token'] ?? data['accessToken'] ?? '').toString(),
+      refreshToken:
+          (data['refresh_token'] ?? data['refreshToken'] ?? '').toString(),
       lastActiveAt: DateTime.now(),
       permissions: user['permissions'] != null
           ? Map<String, dynamic>.from(user['permissions'])
@@ -63,20 +67,27 @@ class AuthRepository {
     final user = data['user'] ?? {};
 
     final account = AuthAccount(
-      id: user['storeOwnerId'] ?? user['id'],
+      id: (user['storeOwnerId'] ?? user['id'] ?? data['store_owner_id'] ?? '')
+          .toString(),
       phone: phone,
       displayName: name,
       storeName: storeName,
       role: 'STORE_OWNER',
       isResponsibleWorker: false,
-      accessToken: data['accessToken'],
-      refreshToken: data['refreshToken'],
+      allowResponsiblePurchases: false,
+      accessToken: (data['access_token'] ?? data['accessToken'] ?? '').toString(),
+      refreshToken:
+          (data['refresh_token'] ?? data['refreshToken'] ?? '').toString(),
       lastActiveAt: DateTime.now(),
       permissions: {},
     );
 
     await _storage.saveAccount(account, setActive: true);
     return account;
+  }
+
+  Future<void> saveUpdatedAccount(AuthAccount account) async {
+    await _storage.saveAccount(account, setActive: true);
   }
 
   Future<void> changeTempPassword({

@@ -93,6 +93,8 @@ class CreditProvider with ChangeNotifier {
     required String customerId,
     required double amount,
     String paymentMethod = 'CASH',
+    String? walletId,
+    String? attachmentUrl,
     String? notes,
   }) async {
     _isLoading = true;
@@ -105,7 +107,10 @@ class CreditProvider with ChangeNotifier {
         data: {
           'amount': amount,
           'paymentMethod': paymentMethod,
-          if (notes != null) 'notes': notes,
+          if (walletId != null && walletId.isNotEmpty) 'walletId': walletId,
+          if (attachmentUrl != null && attachmentUrl.isNotEmpty)
+            'attachmentUrl': attachmentUrl,
+          if (notes != null && notes.isNotEmpty) 'notes': notes,
         },
       );
       await fetchCustomers();
@@ -115,6 +120,20 @@ class CreditProvider with ChangeNotifier {
       _isLoading = false;
       notifyListeners();
       return false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> fetchStatement(String customerId) async {
+    try {
+      final res = await _api.get(ApiEndpoints.creditStatement(customerId));
+      if (res.data is Map) {
+        return Map<String, dynamic>.from(res.data);
+      }
+      return null;
+    } catch (e) {
+      _errorMessage = e.toString();
+      notifyListeners();
+      return null;
     }
   }
 }

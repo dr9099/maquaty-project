@@ -38,6 +38,19 @@ export class RolesGuard implements CanActivate {
       }
     }
 
+    if (requirement.purchasesAccess) {
+      if (user.role === 'WORKER') {
+        if (!user.isResponsible || !user.allowResponsiblePurchases) {
+          throw ApiError.forbidden(
+            'PERMISSION_DENIED',
+            'إدارة المشتريات والموردين غير مفعلة لحسابك. يمكن لمالك المتجر تفعيلها للعامل المسؤول من إعدادات المتجر.',
+          );
+        }
+      } else if (user.role !== 'STORE_OWNER') {
+        throw ApiError.forbidden('PERMISSION_DENIED', 'لا تملك صلاحية الوصول لهذا الإجراء.');
+      }
+    }
+
     return true;
   }
 }

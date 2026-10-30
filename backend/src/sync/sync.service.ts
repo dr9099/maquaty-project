@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import {
   BroadcastAckType,
   DeviceStatus,
-  Prisma,
   RejectionReasonCode,
   SyncOpStatus,
 } from '@prisma/client';
@@ -11,12 +10,16 @@ import { SalesService } from '../sales/sales.service';
 import { CreditService } from '../credit/credit.service';
 import { DamagedGoodsService } from '../damaged-goods/damaged-goods.service';
 import { ExpensesService } from '../expenses/expenses.service';
+import { SuppliersService } from '../suppliers/suppliers.service';
+import { PurchasesService } from '../purchases/purchases.service';
+import { ReportsService } from '../reports/reports.service';
+import { CURRENCY_METADATA } from '../settings/settings.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
 import { AuthenticatedUser } from '../common/types';
 import { AckBroadcastDto, DeviceSyncDto, PullBroadcastsDto } from './dto/sync.dto';
 
-// خدمة المزامنة المركزية — API_SPEC القسم 14 / R-26 / R-30
+// خدمة المزامنة المركزية — API_SPEC القسم 14 / R-26 / R-30 / D-04
 @Injectable()
 export class SyncService {
   constructor(
@@ -25,11 +28,41 @@ export class SyncService {
     private readonly credit: CreditService,
     private readonly damagedGoods: DamagedGoodsService,
     private readonly expenses: ExpensesService,
+    private readonly suppliers: SuppliersService,
+    private readonly purchases: PurchasesService,
+    private readonly reports: ReportsService,
     private readonly audit: AuditService,
   ) {}
 
   async sync(user: AuthenticatedUser, dto: DeviceSyncDto, ip?: string) {
     const storeOwnerId = user.storeOwnerId!;
+
+    // جلب إعدادات المالك الحية للتحقق من صلاحية المشتريات للعامل المسؤول
+    const owner = await this.prisma.storeOwner.findUniqueOrThrow({
+      where: { id: storeOwnerId },
+      select: {
+        status: true,
+        trialSalesUsed: true,
+        trialSalesLimit: true,
+        maxWorkersAllowed: true,
+        currency: true,
+        defaultCostingMethod: true,
+        allowResponsiblePurchases: true,
+      },
+    });
+
+    let isResponsibleWorker = Boolean(user.isResponsible);
+    if (user.role === 'WORKER' && user.workerId) {
+      const liveWorker = await this.prisma.worker.findUnique({
+        where: { id: user.workerId },
+        select: { isResponsible: true },
+      });
+      isResponsibleWorker = Boolean(liveWorker?.isResponsible);
+    }
+
+    const isOwner = user.role === 'STORE_OWNER';
+    const canManagePurchases =
+      isOwner || (user.role === 'WORKER' && isResponsibleWorker && owner.allowResponsiblePurchases);
 
     // 1) فحص حالة الجهاز وتحديث بيانات الظهور
     let device = await this.prisma.device.findUnique({
@@ -97,6 +130,36 @@ export class SyncService {
           await this.damagedGoods.record(user, op.payload as any, ip);
         } else if (op.opType === 'WORKER_ADVANCE') {
           await this.expenses.recordWorkerAdvance(user, op.payload as any);
+        } else if (op.opType === 'SUPPLIER_CREATE') {
+          if (!canManagePurchases) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية إدارة الموردين.');
+          }
+          await this.suppliers.create(user, op.payload as any, ip);
+        } else if (op.opType === 'PURCHASE') {
+          if (!canManagePurchases) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل فواتير الشراء.');
+          }
+          await this.purchases.create(user, op.payload as any, ip);
+        } else if (op.opType === 'SUPPLIER_PAYMENT') {
+          if (!canManagePurchases) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية سداد الموردين.');
+          }
+          await this.suppliers.recordPayment(user, op.payload.supplierId, op.payload as any, ip);
+        } else if (op.opType === 'PURCHASE_RETURN') {
+          if (!canManagePurchases) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل مرتجعات المشتريات.');
+          }
+          await this.purchases.createReturn(user, op.payload.purchaseInvoiceId, op.payload as any, ip);
+        } else if (op.opType === 'OWNER_TRANSACTION') {
+          if (!isOwner) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'إيداعات ومسحوبات المالك حصرية لمالك المتجر.');
+          }
+          await this.reports.createOwnerTransaction(storeOwnerId, op.payload as any, ip);
+        } else if (op.opType === 'EXPENSE') {
+          if (!isOwner) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'تسجيل مصروفات المتجر حصري لمالك المتجر.');
+          }
+          await this.expenses.createUnifiedExpense(user, op.payload as any, ip);
         } else {
           throw ApiError.badRequest('VALIDATION_ERROR', `نوع العملية غير معروف: ${op.opType}`);
         }
@@ -164,20 +227,25 @@ export class SyncService {
       data: { lastSyncVersion: BigInt(nextSyncVersion) },
     });
 
-    // 4) جلب تحديثات الخادم (Delta / Server Updates)
+    // 4) جلب تحديثات الخادم (Delta / Server Updates مع حدود أداء التخزين المحلي D-04)
+    const totalItemsCount = await this.prisma.item.count({
+      where: { storeOwnerId, deletedAt: null },
+    });
+    const cacheLimit = totalItemsCount > 50_000 ? 5_000 : 20_000;
+
     const items = await this.prisma.item.findMany({
       where: { storeOwnerId, deletedAt: null },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ entryDate: 'desc' }, { updatedAt: 'desc' }],
+      take: cacheLimit,
     });
 
-    const isOwner = user.role === 'STORE_OWNER';
     const serverItems = items.map((i) => ({
       id: i.id,
       name: i.name,
       unit: i.unit,
       quantity: Number(i.quantity),
       sell_price: Number(i.sellPrice),
-      cost_price: isOwner ? Number(i.costPrice) : undefined, // حماية سعر التكلفة
+      cost_price: canManagePurchases ? Number(i.costPrice) : undefined, // حماية سعر التكلفة لغير المخوّل
       emergency_price_mode: i.emergencyPriceMode,
       emergency_price_plus_fixed: i.emergencyPricePlusFixed ? Number(i.emergencyPricePlusFixed) : null,
       emergency_price_min: i.emergencyPriceMin ? Number(i.emergencyPriceMin) : null,
@@ -186,7 +254,7 @@ export class SyncService {
     }));
 
     let workersList: any[] | undefined = undefined;
-    if (isOwner || user.isResponsible) {
+    if (isOwner || isResponsibleWorker) {
       const workers = await this.prisma.worker.findMany({
         where: { storeOwnerId, status: { in: ['ACTIVE', 'SUSPENDED'] } },
         orderBy: { createdAt: 'asc' },
@@ -200,7 +268,59 @@ export class SyncService {
       }));
     }
 
-    const owner = await this.prisma.storeOwner.findUniqueOrThrow({
+    let suppliersList: any[] | undefined = undefined;
+    let recentPurchasesList: any[] | undefined = undefined;
+    if (canManagePurchases) {
+      const [suppliers, recentPurchases] = await Promise.all([
+        this.prisma.supplier.findMany({
+          where: { storeOwnerId, deletedAt: null },
+          orderBy: { updatedAt: 'desc' },
+          take: 200,
+        }),
+        this.prisma.purchaseInvoice.findMany({
+          where: { storeOwnerId },
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+          select: {
+            id: true,
+            invoiceNumber: true,
+            supplierId: true,
+            invoiceDate: true,
+            paymentType: true,
+            totalAmount: true,
+            paidAmount: true,
+            remainingAmount: true,
+            status: true,
+            costingMethodUsed: true,
+            updatedAt: true,
+          },
+        }),
+      ]);
+      suppliersList = suppliers.map((s) => ({
+        id: s.id,
+        name: s.name,
+        phone: s.phone,
+        current_balance: Number(s.currentBalance),
+        status: s.status,
+        updated_at: s.updatedAt,
+      }));
+      recentPurchasesList = recentPurchases.map((p) => ({
+        id: p.id,
+        invoice_number: p.invoiceNumber,
+        supplier_id: p.supplierId,
+        invoice_date: p.invoiceDate,
+        payment_type: p.paymentType,
+        total_amount: Number(p.totalAmount),
+        paid_amount: Number(p.paidAmount),
+        remaining_amount: Number(p.remainingAmount),
+        status: p.status,
+        costing_method_used: p.costingMethodUsed,
+        updated_at: p.updatedAt,
+      }));
+    }
+
+    // Re-read status/trial counters after any SALE ops executed above
+    const refreshedOwner = await this.prisma.storeOwner.findUniqueOrThrow({
       where: { id: storeOwnerId },
       select: {
         status: true,
@@ -219,19 +339,28 @@ export class SyncService {
       process.env.MIN_SUPPORTED_APP_VERSION ||
       '1.0.0';
 
+    void this.audit;
+
     return {
       new_sync_version: nextSyncVersion,
-      account_status: owner.status,
+      account_status: refreshedOwner.status,
       min_app_version: minAppVersion,
       processed_operations: processedOps,
       server_updates: {
         items: serverItems,
         workers: workersList,
+        ...(canManagePurchases ? { suppliers: suppliersList, purchases: recentPurchasesList } : {}),
+        store_settings: {
+          currency: owner.currency,
+          currency_symbol: CURRENCY_METADATA[owner.currency].symbol,
+          allow_responsible_purchases: owner.allowResponsiblePurchases,
+          ...(canManagePurchases ? { default_costing_method: owner.defaultCostingMethod } : {}),
+        },
         subscription: {
-          status: owner.status,
-          trial_sales_used: owner.trialSalesUsed,
-          trial_sales_limit: owner.trialSalesLimit,
-          max_workers_allowed: owner.maxWorkersAllowed,
+          status: refreshedOwner.status,
+          trial_sales_used: refreshedOwner.trialSalesUsed,
+          trial_sales_limit: refreshedOwner.trialSalesLimit,
+          max_workers_allowed: refreshedOwner.maxWorkersAllowed,
         },
       },
     };

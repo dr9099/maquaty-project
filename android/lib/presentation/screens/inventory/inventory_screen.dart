@@ -41,7 +41,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     return AppScaffold(
       title: 'المخزون',
       currentBottomNavIndex: 1,
-      floatingActionButton: auth.isOwner
+      floatingActionButton: auth.canManagePurchases
           ? FloatingActionButton(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
@@ -90,7 +90,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               'لا توجد أصناف مسجلة بالمخزون حالياً',
                               style: TextStyle(color: AppColors.textSecondary, fontSize: 14),
                             ),
-                            if (auth.isOwner) ...[
+                            if (auth.canManagePurchases) ...[
                               const SizedBox(height: 12),
                               ElevatedButton(
                                 onPressed: () => Navigator.pushNamed(context, '/items-manage'),
@@ -132,14 +132,14 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 subtitle: Row(
                                   children: [
                                     Text(
-                                      'المتبقي: ${item.quantity} كجم/حبة',
+                                      'المتبقي: ${item.quantity} ${item.unit}',
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,
                                         color: isLowStock ? AppColors.lossRed : AppColors.textSecondary,
                                       ),
                                     ),
-                                    if (auth.isOwner && item.costPrice != null) ...[
+                                    if (auth.canManagePurchases && item.costPrice != null) ...[
                                       const SizedBox(width: 10),
                                       Text(
                                         'التكلفة: ${_currencyFormat.format(item.costPrice)} ريال',

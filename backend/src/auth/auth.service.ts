@@ -266,6 +266,43 @@ export class AuthService {
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       account_status: worker ? worker.status : owner!.status,
+      user: worker
+        ? {
+            id: worker.id,
+            storeOwnerId: worker.storeOwnerId,
+            name: worker.fullName,
+            storeName: worker.storeOwner.storeName,
+            phone: worker.phone,
+            role: 'WORKER',
+            accountStatus: worker.storeOwner.status,
+            isResponsibleWorker: worker.isResponsible,
+            allowResponsiblePurchases: worker.isResponsible
+              ? worker.storeOwner.allowResponsiblePurchases
+              : false,
+            trialSalesUsed: worker.storeOwner.trialSalesUsed,
+            trialSalesLimit: worker.storeOwner.trialSalesLimit,
+            permissions: {
+              showCostPrice: worker.permShowCostPrice,
+              showSellPricesInventory: worker.permShowSellPricesInventory,
+              damagedGoodsEntry: worker.permDamagedGoodsEntry,
+              reportsAccess: worker.permReportsAccess,
+              enterOwnAdvance: worker.permEnterOwnAdvance,
+              editWorkerClosingCash: worker.permEditWorkerClosingCash,
+            },
+          }
+        : {
+            id: owner!.id,
+            storeOwnerId: owner!.id,
+            name: owner!.fullName,
+            storeName: owner!.storeName,
+            phone: owner!.phone,
+            role: 'STORE_OWNER',
+            accountStatus: owner!.status,
+            isResponsibleWorker: false,
+            allowResponsiblePurchases: owner!.allowResponsiblePurchases,
+            trialSalesUsed: owner!.trialSalesUsed,
+            trialSalesLimit: owner!.trialSalesLimit,
+          },
     };
   }
 

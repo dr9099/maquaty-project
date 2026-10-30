@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsEnum,
   IsNumber,
   IsOptional,
@@ -7,7 +8,13 @@ import {
   IsNotEmpty,
   Min,
 } from 'class-validator';
-import { EmergencyPriceMode } from '@prisma/client';
+import { Transform } from 'class-transformer';
+import { CostingMethod, EmergencyPriceMode } from '@prisma/client';
+
+function normalizeEmergencyMode(value: unknown): unknown {
+  if (value === 'MANUAL_RANGE' || value === 'OPEN') return 'RANGE_OR_OPEN';
+  return value;
+}
 
 export class CreateItemDto {
   @IsString()
@@ -31,6 +38,7 @@ export class CreateItemDto {
   sellPrice!: number;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeEmergencyMode(value))
   @IsEnum(EmergencyPriceMode, { message: 'نمط سياسة البيع الاضطراري غير صالح.' })
   emergencyPriceMode?: EmergencyPriceMode;
 
@@ -51,6 +59,16 @@ export class CreateItemDto {
   @IsNumber()
   @Min(0)
   emergencyPriceMax?: number;
+
+  @IsOptional()
+  @IsEnum(CostingMethod, {
+    message: 'طريقة احتساب التكلفة يجب أن تكون WEIGHTED_AVERAGE أو LAST_PRICE أو FIFO.',
+  })
+  costingMethod?: CostingMethod;
+
+  @IsOptional()
+  @IsBoolean()
+  promptOnSameDayPriceDiff?: boolean;
 }
 
 export class UpdateItemDto {
@@ -80,6 +98,7 @@ export class UpdateItemDto {
   sellPrice?: number;
 
   @IsOptional()
+  @Transform(({ value }) => normalizeEmergencyMode(value))
   @IsEnum(EmergencyPriceMode)
   emergencyPriceMode?: EmergencyPriceMode;
 

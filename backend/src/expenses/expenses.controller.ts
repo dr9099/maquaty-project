@@ -20,17 +20,47 @@ import {
   CreateEmployeeAdvanceDto,
   CreateEmployeeDto,
   CreateRentRecordDto,
+  CreateUnifiedExpenseDto,
   CreateUtilityPaymentDto,
   CreateWorkerAdvanceDto,
   PayEmployeeDto,
+  SettleExpenseAccrualDto,
 } from './dto/expenses.dto';
 
-// المصروفات والأجور والإيجارات والخدمات وسلف العمال — API_SPEC القسم 8
+// المصروفات والأجور والإيجارات والخدمات والمصروفات المستحقة وسلف العمال — API_SPEC القسم 8
 @Controller()
 @UseFilters(ApiExceptionFilter)
 @UseGuards(RolesGuard, TenantIsolationGuard)
 export class ExpensesController {
-  constructor(private readonly expenses: ExpensesService) {}
+  constructor(private readonly expenses: ExpensesService) { }
+
+  // === واجهة المصروفات الموحدة (لشاشة المصروفات + المستحقات غير المسددة) ===
+
+  @Get('expenses')
+  @RequireRoles({ roles: ['STORE_OWNER', 'WORKER'], responsibleOnly: true })
+  listUnifiedExpenses(@Req() req: Request) {
+    return this.expenses.listUnifiedExpenses(getRequestUser(req));
+  }
+
+  @Post('expenses')
+  @RequireRoles({ roles: ['STORE_OWNER', 'WORKER'], responsibleOnly: true })
+  createUnifiedExpense(
+    @Body() dto: CreateUnifiedExpenseDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ) {
+    return this.expenses.createUnifiedExpense(getRequestUser(req), dto, ip);
+  }
+
+  @Post('expenses/accruals/settle')
+  @RequireRoles({ roles: ['STORE_OWNER'] })
+  settleAccrual(
+    @Body() dto: SettleExpenseAccrualDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ) {
+    return this.expenses.settleAccrual(getRequestUser(req).storeOwnerId!, dto, ip);
+  }
 
   // === الأجور والموظفون (حصري للمالك) ===
 
@@ -88,7 +118,7 @@ export class ExpensesController {
     return this.expenses.createRentRecord(getRequestUser(req).storeOwnerId!, dto);
   }
 
-  // === الخدمات (حصري للمالك) ===
+  // === الخدمات ومصروفات أخرى (حصري للمالك) ===
 
   @Get('utility-payments')
   @RequireRoles({ roles: ['STORE_OWNER'] })

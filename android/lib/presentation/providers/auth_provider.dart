@@ -32,10 +32,32 @@ class AuthProvider with ChangeNotifier {
   bool get isAuthenticated => _status == AuthStatus.authenticated && _currentAccount != null;
   bool get isOwner => _currentAccount?.role == 'STORE_OWNER';
   bool get isResponsibleWorker => _currentAccount?.isResponsibleWorker ?? false;
+  bool get allowResponsiblePurchases =>
+      _currentAccount?.allowResponsiblePurchases ?? false;
 
   // فحص الصلاحيات الفردية (BR-010 / docs/06-user-roles-permissions.md)
   bool get canViewFunds => isOwner || isResponsibleWorker;
   bool get canManageCredit => isOwner || isResponsibleWorker;
+  // المشتريات والموردون وتكلفة الشراء للمالك افتراضياً، وللعامل المسؤول إذا سمح المالك من الإعدادات (R-38)
+  bool get canManagePurchases =>
+      isOwner || (isResponsibleWorker && allowResponsiblePurchases);
+  bool get canManageSuppliers =>
+      isOwner || (isResponsibleWorker && allowResponsiblePurchases);
+  bool get canManageStoreSettings => isOwner;
+
+  Future<void> syncAllowResponsiblePurchases(bool allowed) async {
+    if (_currentAccount == null) return;
+    if (_currentAccount!.allowResponsiblePurchases == allowed) return;
+    final updated = _currentAccount!.copyWith(
+      allowResponsiblePurchases: allowed,
+    );
+    _currentAccount = updated;
+    try {
+      await _repo.saveUpdatedAccount(updated);
+      _accounts = await _repo.getAllAccounts();
+    } catch (_) {}
+    notifyListeners();
+  }
   bool get canEnterOwnAdvance {
     if (isOwner) return true;
     if (isResponsibleWorker) {

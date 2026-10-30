@@ -24,6 +24,11 @@
 | `worker.phone` | إلزامي | نص رقمي | فريد عالمياً |
 | `new_password` + `confirmation` (أي شاشة تغيير كلمة مرور) | إلزامي | نص | يتطابقان حرفياً، وإلا `400 PASSWORD_MISMATCH` |
 | نطاق تاريخ (تقارير، فلاتر) | إلزامي إن مطلوباً | تاريخ | `date_from <= date_to`، وإلا `400 INVALID_DATE_RANGE` |
+| `supplier.name` | إلزامي | نص | غير فارغ؛ منع التكرار الواضح للاسم المطبّع أو الجوال لنفس المتجر (`409 SUPPLIER_DUPLICATE`) |
+| `supplier.openingBalance`, `creditLimit` | اختياري | رقم | `>= 0` |
+| `purchase_invoice.items` | إلزامي | مصفوفة | من `1` إلى `200` سطر كحد أقصى (`400 INVOICE_LINES_LIMIT_EXCEEDED` — R-43)؛ الكميات ومعامل التحويل `> 0` والأسعار/الخصومات `>= 0` |
+| `purchase_invoice.paidCash + paidElectronic` | اختياري | رقم | مجموع المسدد `<= netTotal`؛ في `CREDIT` يساوي `0`؛ في `PARTIAL` أكبر من `0` وأقل من `netTotal` |
+| `settings.currency` | إلزامي عند التحديث | Enum | `YER \| SAR \| USD`؛ يُمنع التغيير بعد وجود حركات مالية (`409 CURRENCY_CHANGE_LOCKED` — R-42) |
 
 ## 2. فئات الأخطاء ومعالجتها
 
@@ -56,6 +61,17 @@
 | `409 DAY_ALREADY_CLOSED` | returns/daily-closings | اليوم معتمد — لا مرتجع ولا تعديل |
 | `400 DISALLOWED_RESOLUTION_ACTION` | resolve المرفوضة | خيار معالجة لا يطابق سبب الرفض |
 | `403 NOT_OWN_SALE` | `POST /returns` | عامل يرتجع عملية ليست له |
+| `409 SUPPLIER_DUPLICATE` | `POST/PATCH /suppliers` | تكرار واضح لاسم المورد أو رقم جواله داخل نفس المتجر |
+| `409 SUPPLIER_HAS_BALANCE` | `DELETE /suppliers/:id` | منع الحذف الناعم لمورد عليه رصيد مستحق غير صفري |
+| `400 SUPPLIER_SUSPENDED` | `POST /purchases` | منع اعتماد فاتورة شراء على مورد موقوف |
+| `409 SUPPLIER_CREDIT_LIMIT_EXCEEDED` | `POST/PATCH /purchases` | تجاوز سقف الائتمان المسموح به للمورد |
+| `400 INVOICE_LINES_LIMIT_EXCEEDED` | `POST/PATCH /purchases` | تجاوز حد `200` سطر في فاتورة الشراء الواحدة (R-43) |
+| `409 INVOICE_NOT_EDITABLE` | `PATCH /purchases/:id` | محاولة تعديل فاتورة معتمدة (`POSTED`) أو ملغاة (`VOID`) |
+| `409 INVOICE_CANNOT_VOID` | `POST /purchases/:id/void` | محاولة إلغاء فاتورة بعد وجود سداد أو مرتجع أو انخفاض مخزون الصنف دون الكمية المشتراة |
+| `409 PURCHASE_ITEM_HAS_SALES` | `POST /purchases/:id/returns` | منع مرتجع المشتريات لحدوث عملية بيع لاحقة على الصنف (R-41) |
+| `400 RETURN_QTY_EXCEEDS_PURCHASED` | `POST /purchases/:id/returns` | كمية مرتجع المشتريات تتجاوز الكمية المشتراة المتبقية في الفاتورة |
+| `409 COSTING_METHOD_REQUIRED` | `POST /purchases`, `/post` | اشتراط تحديد طريقة احتساب التكلفة عند الشراء المتكرر لنفس الصنف في نفس اليوم أو اختلاف السعر (R-40) |
+| `409 CURRENCY_CHANGE_LOCKED` | `PATCH /settings` | منع تغيير عملة المتجر بعد تسجيل حركات مالية فعلية (R-42) |
 
 ---
 

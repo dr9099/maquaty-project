@@ -6,6 +6,7 @@ class AuthAccount {
   final String storeName;
   final String role; // 'STORE_OWNER' | 'WORKER'
   final bool isResponsibleWorker;
+  final bool allowResponsiblePurchases;
   final String accessToken;
   final String refreshToken;
   final DateTime lastActiveAt;
@@ -18,6 +19,7 @@ class AuthAccount {
     required this.storeName,
     required this.role,
     this.isResponsibleWorker = false,
+    this.allowResponsiblePurchases = false,
     required this.accessToken,
     required this.refreshToken,
     required this.lastActiveAt,
@@ -33,6 +35,7 @@ class AuthAccount {
         'storeName': storeName,
         'role': role,
         'isResponsibleWorker': isResponsibleWorker,
+        'allowResponsiblePurchases': allowResponsiblePurchases,
         'accessToken': accessToken,
         'refreshToken': refreshToken,
         'lastActiveAt': lastActiveAt.toIso8601String(),
@@ -46,6 +49,7 @@ class AuthAccount {
         storeName: json['storeName'] ?? '',
         role: json['role'] ?? 'WORKER',
         isResponsibleWorker: json['isResponsibleWorker'] ?? false,
+        allowResponsiblePurchases: json['allowResponsiblePurchases'] == true,
         accessToken: json['accessToken'],
         refreshToken: json['refreshToken'],
         lastActiveAt: DateTime.parse(json['lastActiveAt']),
@@ -57,6 +61,7 @@ class AuthAccount {
     String? refreshToken,
     DateTime? lastActiveAt,
     Map<String, dynamic>? permissions,
+    bool? allowResponsiblePurchases,
   }) {
     return AuthAccount(
       id: id,
@@ -65,6 +70,8 @@ class AuthAccount {
       storeName: storeName,
       role: role,
       isResponsibleWorker: isResponsibleWorker,
+      allowResponsiblePurchases:
+          allowResponsiblePurchases ?? this.allowResponsiblePurchases,
       accessToken: accessToken ?? this.accessToken,
       refreshToken: refreshToken ?? this.refreshToken,
       lastActiveAt: lastActiveAt ?? this.lastActiveAt,

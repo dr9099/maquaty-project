@@ -131,7 +131,17 @@ class AppScaffold extends StatelessWidget {
                   if (isResp)
                     _drawerItem(context, Icons.people_outline, 'العمال المدارين', '/managed-workers'),
 
+                  if (auth.canManagePurchases || auth.canManageSuppliers) ...[
+                    const Divider(),
+                    if (auth.canManagePurchases)
+                      _drawerItem(context, Icons.shopping_bag_outlined, 'المشتريات وفواتير التوريد', '/purchases'),
+                    if (auth.canManageSuppliers)
+                      _drawerItem(context, Icons.local_shipping_outlined, 'الموردون وحساباتهم', '/suppliers'),
+                  ],
+
                   if (isOwner) ...[
+                    _drawerItem(context, Icons.menu_book_outlined, 'دفتر الأستاذ العام', '/accounting/ledger'),
+                    _drawerItem(context, Icons.tune_outlined, 'إعدادات المتجر والتكلفة', '/settings/store'),
                     const Divider(),
                     _drawerItem(context, Icons.badge_outlined, 'إدارة العمال', '/workers'),
                     _drawerItem(context, Icons.rule_folder_outlined, 'معالجة العمليات المرفوضة', '/rejected-transactions'),

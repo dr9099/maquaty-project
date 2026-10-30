@@ -10,9 +10,13 @@ import 'presentation/providers/credit_provider.dart';
 import 'presentation/providers/daily_closing_provider.dart';
 import 'presentation/providers/dashboard_provider.dart';
 import 'presentation/providers/inventory_provider.dart';
+import 'presentation/providers/purchases_provider.dart';
 import 'presentation/providers/sales_provider.dart';
+import 'presentation/providers/store_settings_provider.dart';
+import 'presentation/providers/suppliers_provider.dart';
 
 import 'presentation/screens/auth/account_locked_screen.dart';
+import 'presentation/screens/accounting/general_ledger_screen.dart';
 import 'presentation/screens/auth/login_screen.dart';
 import 'presentation/screens/auth/set_new_password_screen.dart';
 import 'presentation/screens/auth/signup_screen.dart';
@@ -24,10 +28,14 @@ import 'presentation/screens/home/home_screen.dart';
 import 'presentation/screens/inventory/damaged_goods_screen.dart';
 import 'presentation/screens/inventory/inventory_screen.dart';
 import 'presentation/screens/inventory/items_manage_screen.dart';
+import 'presentation/screens/purchases/create_purchase_screen.dart';
+import 'presentation/screens/purchases/purchases_screen.dart';
 import 'presentation/screens/reports/reports_screen.dart';
 import 'presentation/screens/sales/operations_log_screen.dart';
 import 'presentation/screens/sales/sell_screen.dart';
 import 'presentation/screens/sales/sold_items_screen.dart';
+import 'presentation/screens/settings/store_settings_screen.dart';
+import 'presentation/screens/suppliers/suppliers_screen.dart';
 import 'presentation/screens/sync/backup_screen.dart';
 import 'presentation/screens/sync/rejected_transactions_screen.dart';
 import 'presentation/screens/workers/workers_screen.dart';
@@ -47,6 +55,9 @@ void main() async {
         ChangeNotifierProvider(create: (_) => SalesProvider(apiClient)),
         ChangeNotifierProvider(create: (_) => CreditProvider(apiClient)),
         ChangeNotifierProvider(create: (_) => DailyClosingProvider(apiClient)),
+        ChangeNotifierProvider(create: (_) => StoreSettingsProvider(apiClient)),
+        ChangeNotifierProvider(create: (_) => SuppliersProvider(apiClient)),
+        ChangeNotifierProvider(create: (_) => PurchasesProvider(apiClient)),
       ],
       child: const MuqawatiApp(),
     ),
@@ -109,6 +120,11 @@ class MuqawatiApp extends StatelessWidget {
         '/rejected-transactions': (_) => const RejectedTransactionsScreen(),
         '/reports': (_) => const ReportsScreen(),
         '/backup': (_) => const BackupScreen(),
+        '/suppliers': (_) => const SuppliersScreen(),
+        '/purchases': (_) => const PurchasesScreen(),
+        '/purchases/create': (_) => const CreatePurchaseScreen(),
+        '/settings/store': (_) => const StoreSettingsScreen(),
+        '/accounting/ledger': (_) => const GeneralLedgerScreen(),
       },
     );
   }

@@ -19,6 +19,9 @@ import { RejectedTransactionsModule } from './rejected-transactions/rejected-tra
 import { SyncModule } from './sync/sync.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { ReportsModule } from './reports/reports.module';
+import { SettingsModule } from './settings/settings.module';
+import { SuppliersModule } from './suppliers/suppliers.module';
+import { PurchasesModule } from './purchases/purchases.module';
 
 // مَقوتي — Central Backend Server
 // المرحلة 1 ✓ (قاعدة البيانات + Auth + عزل Tenant + دليل الحسابات)
@@ -44,6 +47,9 @@ import { ReportsModule } from './reports/reports.module';
     SyncModule,
     DashboardModule,
     ReportsModule,
+    SettingsModule,
+    SuppliersModule,
+    PurchasesModule,
     // المراحل اللاحقة: Subscription+Admin (م6) / Backup (م7) / Broadcasts Admin (م8)
   ],
   providers: [

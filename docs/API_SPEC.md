@@ -399,7 +399,52 @@ Base URL (مثال): `https://api.maqouti.app/v1`
 **Auth:** `STORE_OWNER | WORKER`.
 **Business Logic:** للمالك والعامل المسؤول: إجماليات المتجر المُجمَّعة لكل العمال (الصندوق، مبيعات اليوم، حالة اليوم). للعامل العادي: أرقامه هو فقط (عزل Tenant كامل). تعمل بجانب الحساب المحلي Offline — الخادم هو المصدر الموحّد عند المزامنة.
 **Request:** `{ "device_fingerprint": "..." }`
-**Response 200:** `{ "today_status": "OPEN|CLOSED", "cash_today": 42000, "sales_today_total": 96000, "sales_today_count": 31 }`
+**Response 200:** `{ "today_status": "OPEN|CLOSED", "cash_today": 42000, "sales_today_total": 96000, "sales_today_count": 31, "currency": "YER", "currency_symbol": "ر.ي" }` (وللمالك إضافياً: `purchases_today_total`, `purchases_today_count`, `supplier_payables_total`).
+
+---
+
+## 16. إعدادات المتجر والموردون والمشتريات (R-38..R-47)
+
+### 16.1 إعدادات العملة الموحدة والتكلفة وصلاحيات المشتريات — `/v1/settings/store`
+- `GET /v1/settings/store` (`STORE_OWNER | WORKER`): يُرجع رمز العملة الموحدة للمتجر؛ وحالة صلاحية المشتريات للعامل المسؤول (`allow_responsible_purchases`، افتراضياً `false`)؛ وللمالك إضافياً حالة قفل العملة (`currency_locked`)، العملات المدعومة (`YER`, `SAR`, `USD`)، وطريقة التكلفة الافتراضية والخيارات الثلاثة بالعربية.
+- `PATCH /v1/settings/store` (`STORE_OWNER` فقط): تحديث `currency` (قبل أي حركة مالية فقط، وإلا `409 CURRENCY_CHANGE_LOCKED`)، `defaultCostingMethod` (`WEIGHTED_AVERAGE | LAST_PRICE | FIFO`)، `allowResponsiblePurchases` (`true|false` للسماح/المنع للعامل المسؤول R-38)، و`storeName`.
+
+### 16.2 إدارة الموردين وسدادهم — `/v1/suppliers` (`STORE_OWNER` دائماً، أو العامل المسؤول عند تفعيل `allow_responsible_purchases`)
+- `GET /v1/suppliers?search=&status=&only_with_debt=&limit=25&offset=0`: قائمة مرقمة للموردين مع `total_payables`.
+- `POST /v1/suppliers`: إنشاء مورد (مع `openingBalance` اختياري يُنشئ قيد `SUPPLIER_OPENING_BALANCE`؛ أخطاء: `409 SUPPLIER_DUPLICATE`).
+- `GET /v1/suppliers/{id}`, `PATCH /v1/suppliers/{id}`, `DELETE /v1/suppliers/{id}` (حذف ناعم محمي: `409 SUPPLIER_HAS_BALANCE` إن كان الرصيد غير صفري).
+- `POST /v1/suppliers/{id}/payments` و`GET /v1/suppliers/{id}/payments`: تسجيل وعرض دفعات السداد نقداً أو عبر محفظة إلكترونية مع تخصيص لفاتورة محددة أو على الحساب بأسبقية FIFO.
+- `GET /v1/suppliers/{id}/statement?date_from=&date_to=&format=json|csv|excel`: كشف حساب تراكمي مع تصدير CSV بترميز UTF-8 BOM.
+- `GET /v1/suppliers/{id}/aging`: تقرير أعمار الديون (`0-30`, `31-60`, `61-90`, `90+` يوم).
+
+### 16.3 فواتير المشتريات ومحرك التكلفة والمرتجعات — `/v1/purchases` (`STORE_OWNER` دائماً، أو العامل المسؤول عند تفعيل `allow_responsible_purchases`)
+- `POST /v1/purchases/preview-costing`: فحص استباقي لتعارض سعر نفس اليوم للأصناف المتبقية (`quantity > 0`) وإرجاع الخيارات الثلاثة بالعربية ومعاينة المتوسط المرجح.
+- `GET /v1/purchases`: قائمة فواتير الشراء بفلترة (`supplier_id`, `status`, `payment_type`, `date_from`, `date_to`, `search`, `limit`, `offset`).
+- `POST /v1/purchases`: إنشاء فاتورة شراء (`DRAFT` أو `POSTED`) حتى **200 بند** (`400 INVOICE_LINES_LIMIT_EXCEEDED`) بدعم تعدد الوحدات (`conversionFactor`)، الضرائب والخصومات، الدفع النقدي/الإلكتروني/الآجل/الجزئي، واختيار طريقة التكلفة (`409 COSTING_METHOD_REQUIRED` عند طلب التنبيه دون اختيار).
+- `GET /v1/purchases/{id}`, `PATCH /v1/purchases/{id}` (للمسودات فقط؛ وإلا `409 INVOICE_NOT_EDITABLE`).
+- `POST /v1/purchases/{id}/post`: اعتماد المسودة وترحيلها ذرّياً للمخزون والمحاسبة.
+- `POST /v1/purchases/{id}/void`: إلغاء فاتورة معتمدة بقيد عكسي (`PURCHASE_VOID`) بشرط عدم وجود سداد أو مرتجع أو مبيعات أو إغلاق يومي (`409 INVOICE_CANNOT_VOID`).
+- `POST /v1/purchases/{id}/returns` و`GET /v1/purchases/{id}/returns`: تسجيل وعرض مرتجعات المشتريات (`DEBT_REDUCTION | CASH_REFUND`) قبل إغلاق اليوم وبشرط عدم حدوث أي بيع على الصنف (`409 PURCHASE_ITEM_HAS_SALES`).
+
+### 16.4 تقارير المشتريات والذمم الدائنة وهامش الربح
+- `GET /v1/reports?type=purchases`: صافي المشتريات الفعلية من الفواتير المعتمدة مطروحاً منها مرتجعات الشراء (للمالك، أو المسؤول عند تفعيل الصلاحية).
+- `GET /v1/reports/purchases-by-supplier` (للمالك، أو المسؤول عند تفعيل الصلاحية).
+- `GET /v1/reports/purchases-by-item` (للمالك، أو المسؤول عند تفعيل الصلاحية).
+- `GET /v1/reports/supplier-payables` (للمالك، أو المسؤول عند تفعيل الصلاحية).
+- `GET /v1/reports/profit-margin` (`STORE_OWNER` حصراً): قائمة الدخل وهامش الربح مع تفصيل المصروفات التشغيلية متضمنة الحساب المستقل `5700 مصروفات أخرى` وفلترة الفترة.
+
+### 16.5 جاري المالك وتسوية المحافظ والمصروفات المستحقة ودفتر الأستاذ (R-45..R-47)
+- **جاري المالك (`3100` - `STORE_OWNER` حصراً):**
+  - `GET /v1/funds/owner-transactions?date_from=&date_to=`: استعراض حركات إيداع ومسحوبات المالك.
+  - `POST /v1/funds/owner-transactions`: تسجيل إيداع رأسمالي (`DEPOSIT`) أو مسحوبات شخصية (`WITHDRAWAL`) نقداً أو إلكترونياً بقيد مزدوج على `3100` معزولاً عن الأرباح التشغيلية.
+- **تسوية المحافظ الإلكترونية (`STORE_OWNER` حصراً):**
+  - `GET /v1/wallets/:id/transactions`: كشف حركات المحفظة الدفتري وعمليات الدخل والخرج غير المسواة.
+  - `POST /v1/wallets/:id/settle`: مطابقة الرصيد الفعلي للمزود مع الدفتري، ترحيل فارق العمولة/العجز إلى `5600` أو الفائض إلى `4300`، سحب نقدية اختياري إلى صندوق المحل `1000`، وتصفير عداد العمليات غير المسواة.
+- **سداد المصروفات المستحقة (`2100` - `STORE_OWNER` حصراً):**
+  - `POST /v1/expenses/accruals/settle`: سداد التزام مصروف مستحق (إيجار، خدمات، رواتب) نقداً أو إلكترونياً.
+- **دليل الحسابات ودفتر الأستاذ العام (`STORE_OWNER` حصراً):**
+  - `GET /v1/accounting/accounts?from=&to=`: ميزان المراجعة المتوازن وأرصدة الدليل.
+  - `GET /v1/accounting/ledger?account_code=&reference_type=&from=&to=&limit=&offset=&format=csv`: قيود دفتر الأستاذ العام مع الرصيد التراكمي وتصدير كشف الحساب CSV بترميز UTF-8 BOM.
 
 ---
 

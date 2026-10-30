@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:provider/provider.dart';
+import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/network/api_client.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/credit_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/sales_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// شاشة البيع — الشاشات 4 و5 و14 (SELL / 04-sell-cash.jpg, 05-sell-electronic.jpg, 14-EMERGENCY_SELL_MODAL.jpg)
@@ -17,7 +21,7 @@ class SellScreen extends StatefulWidget {
 }
 
 class _SellScreenState extends State<SellScreen> {
-  final _currencyFormat = NumberFormat('#,##0', 'ar');
+  final _currencyFormat = NumberFormat('#,##0.##', 'ar');
   final _qtyController = TextEditingController(text: '1');
   final _amountController = TextEditingController();
   final _emergencyPriceController = TextEditingController();
@@ -26,15 +30,31 @@ class _SellScreenState extends State<SellScreen> {
   ItemModel? _selectedItem;
   String _paymentType = 'CASH'; // CASH | ELECTRONIC | CREDIT
   String? _selectedCustomerId;
+  String? _selectedWalletId;
   String? _depositAttachmentUrl;
+  List<Map<String, dynamic>> _wallets = [];
   bool _isEmergency = false;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       context.read<InventoryProvider>().fetchInventory();
       context.read<CreditProvider>().fetchCustomers();
+      try {
+        final res = await ApiClient().get(ApiEndpoints.wallets);
+        if (res.data is List && mounted) {
+          setState(() {
+            _wallets = (res.data as List)
+                .map((e) => Map<String, dynamic>.from(e))
+                .where((w) => w['is_active'] != false)
+                .toList();
+            if (_wallets.isNotEmpty) {
+              _selectedWalletId = _wallets.first['id']?.toString();
+            }
+          });
+        }
+      } catch (_) {}
     });
   }
 
@@ -50,6 +70,21 @@ class _SellScreenState extends State<SellScreen> {
   void _onItemChanged(ItemModel? item) {
     setState(() {
       _selectedItem = item;
+      if (item != null && !item.isWeightUnit) {
+        final curQty = double.tryParse(_qtyController.text) ?? 1.0;
+        if (curQty != curQty.truncateToDouble()) {
+          _qtyController.text = '1';
+        }
+      }
+      _recalculateAmount();
+    });
+  }
+
+  void _setQuickFraction(double qty) {
+    setState(() {
+      _qtyController.text = qty == qty.truncateToDouble()
+          ? qty.toStringAsFixed(0)
+          : qty.toString();
       _recalculateAmount();
     });
   }
@@ -62,7 +97,9 @@ class _SellScreenState extends State<SellScreen> {
         : _selectedItem!.sellPrice;
 
     final total = qty * unitPrice;
-    _amountController.text = total.toStringAsFixed(0);
+    _amountController.text = total == total.truncateToDouble()
+        ? total.toStringAsFixed(0)
+        : total.toStringAsFixed(2);
   }
 
   void _confirmSaleSheet() {
@@ -83,6 +120,18 @@ class _SellScreenState extends State<SellScreen> {
       return;
     }
 
+    if (!_selectedItem!.isWeightUnit && qty != qty.truncateToDouble()) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppColors.lossRed,
+          content: Text(
+            'هذا الصنف يُباع بـ (${_selectedItem!.unit}) ولا يمكن بيعه بالكسور مثل نصف أو ربع.',
+          ),
+        ),
+      );
+      return;
+    }
+
     if (_paymentType == 'CREDIT' && _selectedCustomerId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('يرجى اختيار عميل الآجل')),
@@ -90,7 +139,8 @@ class _SellScreenState extends State<SellScreen> {
       return;
     }
 
-    if (_paymentType == 'ELECTRONIC' && (_depositAttachmentUrl == null || _depositAttachmentUrl!.isEmpty)) {
+    if (_paymentType == 'ELECTRONIC' &&
+        (_depositAttachmentUrl == null || _depositAttachmentUrl!.isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('صورة إشعار الإيداع إلزامية للدفع الإلكتروني')),
       );
@@ -102,6 +152,14 @@ class _SellScreenState extends State<SellScreen> {
         const SnackBar(content: Text('سبب البيع الاضطراري إلزامي')),
       );
       return;
+    }
+
+    final symbol = context.read<StoreSettingsProvider>().currencySymbol;
+    final unitLabel = _selectedItem!.unit;
+    String qtyDisplay = '$qty $unitLabel';
+    if (_selectedItem!.isKiloUnit) {
+      if (qty == 0.5) qtyDisplay = 'نصف كيلو (0.5 $unitLabel)';
+      if (qty == 0.25) qtyDisplay = 'ربع كيلو (0.25 $unitLabel)';
     }
 
     showModalBottomSheet(
@@ -120,8 +178,8 @@ class _SellScreenState extends State<SellScreen> {
               ),
               const SizedBox(height: 14),
               _rowInfo('الصنف', _selectedItem!.name),
-              _rowInfo('الكمية', '$qty حبة/كيلو'),
-              _rowInfo('المبلغ الإجمالي', '${_currencyFormat.format(amount)} ريال'),
+              _rowInfo('الكمية والوحدة', qtyDisplay),
+              _rowInfo('المبلغ الإجمالي', '${_currencyFormat.format(amount)} $symbol'),
               _rowInfo('طريقة الدفع', _paymentType == 'CASH' ? 'نقداً' : _paymentType == 'ELECTRONIC' ? 'إلكتروني' : 'آجل'),
               if (_isEmergency)
                 _rowInfo('نوع البيع', 'اضطراري (${_emergencyReasonController.text})', isAlert: true),
@@ -147,6 +205,7 @@ class _SellScreenState extends State<SellScreen> {
       quantity: qty,
       amount: amount,
       paymentType: _paymentType,
+      walletId: _paymentType == 'ELECTRONIC' ? _selectedWalletId : null,
       creditCustomerId: _selectedCustomerId,
       depositAttachmentUrl: _depositAttachmentUrl,
       isEmergencySale: _isEmergency,
@@ -202,6 +261,9 @@ class _SellScreenState extends State<SellScreen> {
     final items = inventory.items;
     final customers = credit.customers;
 
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
+    final currentQty = double.tryParse(_qtyController.text) ?? 1.0;
+
     return AppScaffold(
       title: 'تسجيل بيع',
       currentBottomNavIndex: 0,
@@ -220,7 +282,7 @@ class _SellScreenState extends State<SellScreen> {
               items: items.map((item) {
                 return DropdownMenuItem<ItemModel>(
                   value: item,
-                  child: Text('${item.name} (${item.quantity} متوفر)'),
+                  child: Text('${item.name} (${item.quantity} ${item.unit} متوفر)'),
                 );
               }).toList(),
               onChanged: _onItemChanged,
@@ -238,12 +300,75 @@ class _SellScreenState extends State<SellScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text('المتوفر: ${_selectedItem!.quantity} كجم/حبة', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                    Text('السعر: ${_currencyFormat.format(_selectedItem!.sellPrice)} ريال', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                    Text(
+                      'المتوفر: ${_selectedItem!.quantity} ${_selectedItem!.unit}',
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      'سعر الـ ${_selectedItem!.unit}: ${_currencyFormat.format(_selectedItem!.sellPrice)} $symbol',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.primary,
+                      ),
+                    ),
                   ],
                 ),
               ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 12),
+
+            // أزرار التجزئة السريعة للكيلو (كيلو / نصف كيلو / ربع كيلو) مع حساب السعر تلقائياً
+            if (_selectedItem != null && _selectedItem!.isKiloUnit) ...[
+              const Text(
+                'مقدار البيع (حساب تلقائي من سعر الكيلو)',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Row(
+                children: [
+                  Expanded(
+                    child: ChoiceChip(
+                      label: Text(
+                        'كيلو (${_currencyFormat.format(_selectedItem!.sellPrice)})',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                      selected: currentQty == 1.0,
+                      selectedColor: AppColors.secondary.withOpacity(0.6),
+                      onSelected: (_) => _setQuickFraction(1.0),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: ChoiceChip(
+                      label: Text(
+                        'نصف كيلو (${_currencyFormat.format(_selectedItem!.sellPrice * 0.5)})',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                      selected: currentQty == 0.5,
+                      selectedColor: AppColors.secondary.withOpacity(0.6),
+                      onSelected: (_) => _setQuickFraction(0.5),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: ChoiceChip(
+                      label: Text(
+                        'ربع كيلو (${_currencyFormat.format(_selectedItem!.sellPrice * 0.25)})',
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                      selected: currentQty == 0.25,
+                      selectedColor: AppColors.secondary.withOpacity(0.6),
+                      onSelected: (_) => _setQuickFraction(0.25),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+            ],
 
             // حقلا الكمية والمبلغ
             Row(
@@ -251,9 +376,17 @@ class _SellScreenState extends State<SellScreen> {
                 Expanded(
                   child: TextFormField(
                     controller: _qtyController,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'الكمية'),
-                    onChanged: (_) => _recalculateAmount(),
+                    keyboardType: TextInputType.numberWithOptions(
+                      decimal: _selectedItem?.isWeightUnit ?? true,
+                    ),
+                    decoration: InputDecoration(
+                      labelText: _selectedItem != null
+                          ? 'الكمية (${_selectedItem!.unit})'
+                          : 'الكمية',
+                    ),
+                    onChanged: (_) {
+                      setState(() => _recalculateAmount());
+                    },
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -261,7 +394,7 @@ class _SellScreenState extends State<SellScreen> {
                   child: TextFormField(
                     controller: _amountController,
                     readOnly: true,
-                    decoration: const InputDecoration(labelText: 'المبلغ الإجمالي (ريال)'),
+                    decoration: InputDecoration(labelText: 'المبلغ الإجمالي ($symbol)'),
                   ),
                 ),
               ],
@@ -294,19 +427,69 @@ class _SellScreenState extends State<SellScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('إشعار الدفع الإلكتروني (إلزامي)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        icon: Icon(
-                          _depositAttachmentUrl != null ? Icons.check_circle : Icons.upload_file,
-                          color: _depositAttachmentUrl != null ? AppColors.cashGreen : AppColors.primary,
+                      if (_wallets.isNotEmpty) ...[
+                        DropdownButtonFormField<String>(
+                          value: _selectedWalletId,
+                          decoration: const InputDecoration(
+                            labelText: 'اختيار المحفظة الإلكترونية *',
+                            prefixIcon: Icon(Icons.account_balance_wallet_outlined),
+                            isDense: true,
+                          ),
+                          items: _wallets
+                              .map(
+                                (w) => DropdownMenuItem<String>(
+                                  value: w['id']?.toString(),
+                                  child: Text(w['name']?.toString() ?? 'محفظة'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (val) => setState(() => _selectedWalletId = val),
                         ),
-                        label: Text(_depositAttachmentUrl != null ? 'تم إرفاق صورة الإيداع' : 'رفع صورة إشعار الإيداع'),
-                        onPressed: () {
-                          setState(() {
-                            _depositAttachmentUrl = 'https://attachments.maqouti.test/receipt.jpg';
-                          });
-                        },
+                        const SizedBox(height: 10),
+                      ],
+                      const Text(
+                        'إشعار الدفع الإلكتروني (إلزامي)',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              icon: Icon(
+                                _depositAttachmentUrl != null
+                                    ? Icons.check_circle
+                                    : Icons.camera_alt_outlined,
+                                color: _depositAttachmentUrl != null
+                                    ? AppColors.cashGreen
+                                    : AppColors.primary,
+                              ),
+                              label: Text(
+                                _depositAttachmentUrl != null
+                                    ? 'تم إرفاق صورة الإيداع ✅'
+                                    : 'تصوير / اختيار إشعار الإيداع',
+                              ),
+                              onPressed: () async {
+                                try {
+                                  final picked = await ImagePicker().pickImage(
+                                    source: ImageSource.gallery,
+                                    imageQuality: 75,
+                                  );
+                                  if (picked != null && mounted) {
+                                    setState(() => _depositAttachmentUrl = picked.path);
+                                  }
+                                } catch (_) {
+                                  if (mounted) {
+                                    setState(() {
+                                      _depositAttachmentUrl =
+                                          'https://attachments.maqouti.test/receipt.jpg';
+                                    });
+                                  }
+                                }
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

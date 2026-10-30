@@ -77,6 +77,72 @@ enum LedgerReferenceType {
   RETURN
   EMERGENCY_SALE_LOSS
   REJECTED_TRANSACTION_RESOLUTION
+  PURCHASE
+  PURCHASE_VOID
+  SUPPLIER_OPENING_BALANCE
+  PURCHASE_PAYMENT
+  PURCHASE_RETURN
+  OWNER_DEPOSIT
+  OWNER_WITHDRAWAL
+  WALLET_SETTLEMENT
+  EXPENSE_SETTLEMENT
+}
+
+enum ExpensePaymentMethod {
+  CASH
+  ELECTRONIC
+  CREDIT
+}
+
+enum ExpenseAccrualTargetType {
+  RENT
+  UTILITY
+  EMPLOYEE_SALARY
+}
+
+enum OwnerTransactionType {
+  DEPOSIT
+  WITHDRAWAL
+}
+
+enum WalletSettlementStatus {
+  MATCHED
+  DISCREPANCY_RESOLVED
+}
+
+enum Currency {
+  YER
+  SAR
+  USD
+}
+
+enum CostingMethod {
+  WEIGHTED_AVERAGE
+  LAST_PRICE
+  FIFO
+}
+
+enum SupplierStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum PurchaseInvoiceStatus {
+  DRAFT
+  POSTED
+  VOIDED
+}
+
+enum PurchasePaymentType {
+  CASH
+  ELECTRONIC
+  CREDIT
+  PARTIAL
+}
+
+enum PurchaseRefundMethod {
+  DEBT_REDUCTION
+  CASH_REFUND
 }
 
 enum RejectionReasonCode {
@@ -179,23 +245,34 @@ model StoreOwner {
   maxWorkersAllowed      Int               @default(0) @map("max_workers_allowed") // رصيد موافقات العمال العاديين من App Owner (R-33)
   tempPasswordHash       String?           @map("temp_password_hash")
   tempPasswordGeneratedAt DateTime?        @map("temp_password_generated_at")
-  mustChangePassword     Boolean           @default(false) @map("must_change_password")
-  deletedAt              DateTime?         @map("deleted_at")
-  createdAt              DateTime          @default(now()) @map("created_at")
-  updatedAt              DateTime          @updatedAt @map("updated_at")
+  mustChangePassword        Boolean           @default(false) @map("must_change_password")
+  currency                  Currency          @default(YER)
+  defaultCostingMethod      CostingMethod     @default(WEIGHTED_AVERAGE) @map("default_costing_method")
+  allowResponsiblePurchases Boolean           @default(false) @map("allow_responsible_purchases")
+  deletedAt                 DateTime?         @map("deleted_at")
+  createdAt                 DateTime          @default(now()) @map("created_at")
+  updatedAt                 DateTime          @updatedAt @map("updated_at")
 
   workers               Worker[]
   items                 Item[]
   sales                 Sale[]
   wallets               Wallet[]
+  walletSettlements     WalletSettlement[]
+  ownerTransactions     OwnerTransaction[]
   rejectedTransactions  RejectedTransaction[]
   damagedGoods          DamagedGood[]
   creditCustomers       CreditCustomer[]
   creditPayments        CreditPayment[]
+  suppliers             Supplier[]
+  purchaseInvoices      PurchaseInvoice[]
+  purchaseItems         PurchaseItem[]
+  supplierPayments      SupplierPayment[]
+  purchaseReturns       PurchaseReturn[]
   employees             Employee[]
   rentRecords           RentRecord[]
   utilityPayments       UtilityPayment[]
   workerAdvances        WorkerAdvance[]
+  expenseSettlements    ExpenseSettlement[]
   dailyClosings         DailyClosing[]
   chartOfAccounts       ChartOfAccount[]
   ledgerEntries         LedgerEntry[]
@@ -230,14 +307,17 @@ model Worker {
   createdAt                           DateTime     @default(now()) @map("created_at")
   updatedAt                           DateTime     @updatedAt @map("updated_at")
 
-  storeOwner     StoreOwner       @relation(fields: [storeOwnerId], references: [id])
-  sales          Sale[]
-  damagedGoods   DamagedGood[]
-  creditPayments CreditPayment[]
-  workerAdvances WorkerAdvance[]
-  returns        Return[]
-  devices        Device[]
-  linkedEmployees Employee[]
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  sales            Sale[]
+  damagedGoods     DamagedGood[]
+  creditPayments   CreditPayment[]
+  workerAdvances   WorkerAdvance[]
+  returns          Return[]
+  devices          Device[]
+  linkedEmployees  Employee[]
+  purchaseInvoices PurchaseInvoice[]
+  supplierPayments SupplierPayment[]
+  purchaseReturns  PurchaseReturn[]
 
   @@index([storeOwnerId, status])
   @@map("workers")
@@ -359,10 +439,12 @@ model Item {
   createdAt                   DateTime           @default(now()) @map("created_at")
   updatedAt                   DateTime           @updatedAt @map("updated_at")
 
-  storeOwner   StoreOwner     @relation(fields: [storeOwnerId], references: [id])
-  sales        Sale[]
-  damagedGoods DamagedGood[]
-  returns      Return[]
+  storeOwner      StoreOwner       @relation(fields: [storeOwnerId], references: [id])
+  sales           Sale[]
+  damagedGoods    DamagedGood[]
+  returns         Return[]
+  purchaseItems   PurchaseItem[]
+  purchaseReturns PurchaseReturn[]
 
   @@index([storeOwnerId, entryDate])
   @@map("items")
@@ -377,6 +459,7 @@ model Sale {
   itemId                 String           @map("item_id") @db.Uuid
   quantity               Decimal          @db.Decimal(12, 3)
   amount                 Decimal          @db.Decimal(12, 2)
+  cogsAmount             Decimal?         @map("cogs_amount") @db.Decimal(12, 2) // لقطة تكلفة البضاعة المباعة لحظة البيع (لدعم FIFO وتغيرات السعر اليومية)
   paymentType            PaymentType      @map("payment_type")
   walletId               String?          @map("wallet_id") @db.Uuid // إلزامي فقط عند ELECTRONIC
   depositAttachmentUrl   String?          @map("deposit_attachment_url") // إلزامي فقط عند ELECTRONIC
@@ -385,21 +468,25 @@ model Sale {
   emergencyReason        String?          @map("emergency_reason") // إلزامي إن is_emergency_sale=true
   emergencyOverridePrice Decimal?         @map("emergency_override_price") @db.Decimal(12, 2)
   priceDifferenceLoss    Decimal          @default(0) @map("price_difference_loss") @db.Decimal(12, 2)
+  walletSettled          Boolean          @default(false) @map("wallet_settled")
+  walletSettlementId     String?          @map("wallet_settlement_id") @db.Uuid
   dailyClosingId         String?          @map("daily_closing_id") @db.Uuid // يُربط عند اعتماد الإغلاق
   soldAt                 DateTime         @default(now()) @map("sold_at")
   createdAt              DateTime         @default(now()) @map("created_at")
   updatedAt              DateTime         @updatedAt @map("updated_at")
 
-  storeOwner     StoreOwner      @relation(fields: [storeOwnerId], references: [id])
-  worker         Worker?         @relation(fields: [workerId], references: [id])
-  item           Item            @relation(fields: [itemId], references: [id])
-  wallet         Wallet?         @relation(fields: [walletId], references: [id])
-  creditCustomer CreditCustomer? @relation(fields: [creditCustomerId], references: [id])
-  dailyClosing   DailyClosing?   @relation(fields: [dailyClosingId], references: [id])
-  returns        Return[]
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  worker           Worker?           @relation(fields: [workerId], references: [id])
+  item             Item              @relation(fields: [itemId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
+  creditCustomer   CreditCustomer?   @relation(fields: [creditCustomerId], references: [id])
+  dailyClosing     DailyClosing?     @relation(fields: [dailyClosingId], references: [id])
+  returns          Return[]
 
   @@index([storeOwnerId, workerId, soldAt])
   @@index([dailyClosingId])
+  @@index([walletId, walletSettled])
   @@map("sales")
 }
 
@@ -407,12 +494,24 @@ model Wallet {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   storeOwnerId String   @map("store_owner_id") @db.Uuid
   name         String // "كريمي"، "جيب"، "ون كاش"...
+  accountCode  String?  @map("account_code")
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
-  sales      Sale[]
+  storeOwner         StoreOwner          @relation(fields: [storeOwnerId], references: [id])
+  sales              Sale[]
+  creditPayments     CreditPayment[]
+  purchaseInvoices   PurchaseInvoice[]
+  supplierPayments   SupplierPayment[]
+  rentRecords        RentRecord[]
+  utilityPayments    UtilityPayment[]
+  employeePayments   EmployeePayment[]
+  employeeAdvances   EmployeeAdvance[]
+  workerAdvances     WorkerAdvance[]
+  expenseSettlements ExpenseSettlement[]
+  ownerTransactions  OwnerTransaction[]
+  settlements        WalletSettlement[]
 
   @@map("wallets")
 }
@@ -481,22 +580,29 @@ model CreditCustomer {
 }
 
 model CreditPayment {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId    String   @map("store_owner_id") @db.Uuid
-  creditCustomerId String  @map("credit_customer_id") @db.Uuid
-  amount          Decimal  @db.Decimal(12, 2)
-  paymentMethod   PaymentType @map("payment_method") // CASH أو ELECTRONIC فقط
-  walletId        String?  @map("wallet_id") @db.Uuid
-  workerId        String?  @map("worker_id") @db.Uuid
-  dailyClosingId  String?  @map("daily_closing_id") @db.Uuid
-  paidAt          DateTime @default(now()) @map("paid_at")
-  createdAt       DateTime @default(now()) @map("created_at")
+  id                 String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String      @map("store_owner_id") @db.Uuid
+  creditCustomerId   String      @map("credit_customer_id") @db.Uuid
+  amount             Decimal     @db.Decimal(12, 2)
+  paymentMethod      PaymentType @map("payment_method") // CASH أو ELECTRONIC فقط
+  walletId           String?     @map("wallet_id") @db.Uuid
+  attachmentUrl      String?     @map("attachment_url")
+  notes              String?
+  walletSettled      Boolean     @default(false) @map("wallet_settled")
+  walletSettlementId String?     @map("wallet_settlement_id") @db.Uuid
+  workerId           String?     @map("worker_id") @db.Uuid
+  dailyClosingId     String?     @map("daily_closing_id") @db.Uuid
+  paidAt             DateTime    @default(now()) @map("paid_at")
+  createdAt          DateTime    @default(now()) @map("created_at")
 
-  storeOwner     StoreOwner     @relation(fields: [storeOwnerId], references: [id])
-  creditCustomer CreditCustomer @relation(fields: [creditCustomerId], references: [id])
-  worker         Worker?        @relation(fields: [workerId], references: [id])
-  dailyClosing   DailyClosing?  @relation(fields: [dailyClosingId], references: [id])
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  creditCustomer   CreditCustomer    @relation(fields: [creditCustomerId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
+  worker           Worker?           @relation(fields: [workerId], references: [id])
+  dailyClosing     DailyClosing?     @relation(fields: [dailyClosingId], references: [id])
 
+  @@index([walletId, walletSettled])
   @@map("credit_payments")
 }
 
@@ -521,76 +627,141 @@ model Employee {
 }
 
 model EmployeeAdvance {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId  String   @map("store_owner_id") @db.Uuid
-  employeeId    String   @map("employee_id") @db.Uuid
-  amount        Decimal  @db.Decimal(12, 2)
-  settledAmount Decimal  @default(0) @map("settled_amount") @db.Decimal(12, 2) // تتبع التسوية بنظام FIFO (R-37)
-  note          String?
-  createdAt     DateTime @default(now()) @map("created_at")
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String               @map("store_owner_id") @db.Uuid
+  employeeId         String               @map("employee_id") @db.Uuid
+  amount             Decimal              @db.Decimal(12, 2)
+  settledAmount      Decimal              @default(0) @map("settled_amount") @db.Decimal(12, 2) // تتبع التسوية بنظام FIFO (R-37)
+  paymentMethod      ExpensePaymentMethod @default(CASH) @map("payment_method")
+  walletId           String?              @map("wallet_id") @db.Uuid
+  attachmentUrl      String?              @map("attachment_url")
+  walletSettled      Boolean              @default(false) @map("wallet_settled")
+  walletSettlementId String?              @map("wallet_settlement_id") @db.Uuid
+  note               String?
+  createdAt          DateTime             @default(now()) @map("created_at")
 
-  employee Employee @relation(fields: [employeeId], references: [id])
+  employee         Employee          @relation(fields: [employeeId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
 
   @@map("employee_advances")
 }
 
 model EmployeePayment {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId    String   @map("store_owner_id") @db.Uuid
-  employeeId      String   @map("employee_id") @db.Uuid
-  amount          Decimal  @db.Decimal(12, 2) // إجمالي المستحق المصروف
-  advanceDeducted Decimal  @default(0) @map("advance_deducted") @db.Decimal(12, 2) // ما تم خصمه من السلف (R-37)
-  netPaid         Decimal  @default(0) @map("net_paid") @db.Decimal(12, 2) // الصافي النقدي المدفوع فعلياً
-  paidAt          DateTime @default(now()) @map("paid_at")
-  createdAt       DateTime @default(now()) @map("created_at")
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String               @map("store_owner_id") @db.Uuid
+  employeeId         String               @map("employee_id") @db.Uuid
+  amount             Decimal              @db.Decimal(12, 2) // إجمالي المستحق المصروف
+  advanceDeducted    Decimal              @default(0) @map("advance_deducted") @db.Decimal(12, 2) // ما تم خصمه من السلف (R-37)
+  netPaid            Decimal              @default(0) @map("net_paid") @db.Decimal(12, 2) // الصافي المستحق بعد خصم السلف
+  paymentMethod      ExpensePaymentMethod @default(CASH) @map("payment_method")
+  walletId           String?              @map("wallet_id") @db.Uuid
+  attachmentUrl      String?              @map("attachment_url")
+  paidAmount         Decimal              @default(0) @map("paid_amount") @db.Decimal(12, 2) // المدفوع فعلياً نقداً/إلكترونياً
+  remainingAmount    Decimal              @default(0) @map("remaining_amount") @db.Decimal(12, 2) // المتبقي كمصروف مستحق (2100)
+  walletSettled      Boolean              @default(false) @map("wallet_settled")
+  walletSettlementId String?              @map("wallet_settlement_id") @db.Uuid
+  paidAt             DateTime             @default(now()) @map("paid_at")
+  createdAt          DateTime             @default(now()) @map("created_at")
 
-  employee Employee @relation(fields: [employeeId], references: [id])
+  employee         Employee          @relation(fields: [employeeId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
 
   @@map("employee_payments")
 }
 
 model RentRecord {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId  String   @map("store_owner_id") @db.Uuid
-  amount        Decimal  @db.Decimal(12, 2)
-  paymentMethod String   @map("payment_method")
-  payerName     String   @map("payer_name")
-  receiverName  String   @map("receiver_name")
-  paidAt        DateTime @default(now()) @map("paid_at")
-  createdAt     DateTime @default(now()) @map("created_at")
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String               @map("store_owner_id") @db.Uuid
+  amount             Decimal              @db.Decimal(12, 2)
+  paymentMethod      ExpensePaymentMethod @default(CASH) @map("payment_method")
+  walletId           String?              @map("wallet_id") @db.Uuid
+  attachmentUrl      String?              @map("attachment_url")
+  paidAmount         Decimal              @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  remainingAmount    Decimal              @default(0) @map("remaining_amount") @db.Decimal(12, 2)
+  payerName          String               @map("payer_name")
+  receiverName       String               @map("receiver_name")
+  note               String?
+  walletSettled      Boolean              @default(false) @map("wallet_settled")
+  walletSettlementId String?              @map("wallet_settlement_id") @db.Uuid
+  paidAt             DateTime             @default(now()) @map("paid_at")
+  createdAt          DateTime             @default(now()) @map("created_at")
 
-  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
 
   @@map("rent_records")
 }
 
 model UtilityPayment {
-  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId    String      @map("store_owner_id") @db.Uuid
-  utilityType     UtilityType @map("utility_type")
-  utilityTypeOther String?    @map("utility_type_other")
-  amount          Decimal     @db.Decimal(12, 2)
-  paidAt          DateTime    @default(now()) @map("paid_at")
-  createdAt       DateTime    @default(now()) @map("created_at")
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String               @map("store_owner_id") @db.Uuid
+  utilityType        UtilityType          @map("utility_type")
+  utilityTypeOther   String?              @map("utility_type_other")
+  amount             Decimal              @db.Decimal(12, 2)
+  paymentMethod      ExpensePaymentMethod @default(CASH) @map("payment_method")
+  walletId           String?              @map("wallet_id") @db.Uuid
+  attachmentUrl      String?              @map("attachment_url")
+  paidAmount         Decimal              @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  remainingAmount    Decimal              @default(0) @map("remaining_amount") @db.Decimal(12, 2)
+  note               String?
+  walletSettled      Boolean              @default(false) @map("wallet_settled")
+  walletSettlementId String?              @map("wallet_settlement_id") @db.Uuid
+  paidAt             DateTime             @default(now()) @map("paid_at")
+  createdAt          DateTime             @default(now()) @map("created_at")
 
-  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
 
   @@map("utility_payments")
 }
 
 model WorkerAdvance {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  storeOwnerId String   @map("store_owner_id") @db.Uuid
-  workerId     String   @map("worker_id") @db.Uuid
-  amount       Decimal  @db.Decimal(12, 2)
-  note         String?
-  recordedAt   DateTime @default(now()) @map("recorded_at")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String               @map("store_owner_id") @db.Uuid
+  workerId           String               @map("worker_id") @db.Uuid
+  amount             Decimal              @db.Decimal(12, 2)
+  paymentMethod      ExpensePaymentMethod @default(CASH) @map("payment_method")
+  walletId           String?              @map("wallet_id") @db.Uuid
+  attachmentUrl      String?              @map("attachment_url")
+  walletSettled      Boolean              @default(false) @map("wallet_settled")
+  walletSettlementId String?              @map("wallet_settlement_id") @db.Uuid
+  note               String?
+  recordedAt         DateTime             @default(now()) @map("recorded_at")
+  createdAt          DateTime             @default(now()) @map("created_at")
 
-  storeOwner StoreOwner @relation(fields: [storeOwnerId], references: [id])
-  worker     Worker     @relation(fields: [workerId], references: [id])
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  worker           Worker            @relation(fields: [workerId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
 
   @@map("worker_advances")
+}
+
+model ExpenseSettlement {
+  id                 String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String                   @map("store_owner_id") @db.Uuid
+  targetType         ExpenseAccrualTargetType @map("target_type")
+  targetId           String                   @map("target_id") @db.Uuid
+  amount             Decimal                  @db.Decimal(12, 2)
+  paymentMethod      PaymentType              @map("payment_method")
+  walletId           String?                  @map("wallet_id") @db.Uuid
+  attachmentUrl      String?                  @map("attachment_url")
+  note               String?
+  walletSettled      Boolean                  @default(false) @map("wallet_settled")
+  walletSettlementId String?                  @map("wallet_settlement_id") @db.Uuid
+  paidAt             DateTime                 @default(now()) @map("paid_at")
+  createdAt          DateTime                 @default(now()) @map("created_at")
+
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
+
+  @@index([storeOwnerId, targetType, targetId])
+  @@map("expense_settlements")
 }
 
 // ═══════════════════════ طبقة المطابقة اليومية والإغلاق ═══════════════════════
@@ -609,9 +780,11 @@ model DailyClosing {
   createdAt    DateTime      @default(now()) @map("created_at")
   updatedAt    DateTime      @updatedAt @map("updated_at")
 
-  storeOwner     StoreOwner      @relation(fields: [storeOwnerId], references: [id])
-  sales          Sale[]
-  creditPayments CreditPayment[]
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  sales            Sale[]
+  creditPayments   CreditPayment[]
+  purchaseInvoices PurchaseInvoice[]
+  supplierPayments SupplierPayment[]
 
   @@unique([storeOwnerId, workerId, closingDate]) // Prisma: يُستكمل بـ NULLS NOT DISTINCT عبر SQL خام في migration (PostgreSQL 15+)
   @@map("daily_closings")
@@ -786,4 +959,239 @@ model TempPasswordAudit {
 
   @@index([storeOwnerId])
   @@map("temp_password_audits")
+}
+
+// ═══════════════════════ طبقة المشتريات وإدارة الموردين ═══════════════════════
+
+model Supplier {
+  id                    String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId          String         @map("store_owner_id") @db.Uuid
+  name                  String
+  phone                 String?
+  address               String?
+  contactPerson         String?        @map("contact_person")
+  taxNumber             String?        @map("tax_number")
+  notes                 String?
+  openingBalance        Decimal        @default(0) @map("opening_balance") @db.Decimal(12, 2)
+  openingBalanceSettled Decimal        @default(0) @map("opening_balance_settled") @db.Decimal(12, 2) // لتتبع تسوية الرصيد الافتتاحي وأعمار الديون (FIFO)
+  currentBalance        Decimal        @default(0) @map("current_balance") @db.Decimal(12, 2)
+  creditLimit           Decimal?       @map("credit_limit") @db.Decimal(12, 2)
+  paymentTermsDays      Int?           @map("payment_terms_days")
+  status                SupplierStatus @default(ACTIVE)
+  deletedAt             DateTime?      @map("deleted_at")
+  createdAt             DateTime       @default(now()) @map("created_at")
+  updatedAt             DateTime       @updatedAt @map("updated_at")
+
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  purchaseInvoices PurchaseInvoice[]
+  payments         SupplierPayment[]
+  returns          PurchaseReturn[]
+
+  @@index([storeOwnerId, status])
+  @@index([storeOwnerId, name])
+  @@map("suppliers")
+}
+
+model PurchaseInvoice {
+  id                 String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String                @map("store_owner_id") @db.Uuid
+  workerId           String?               @map("worker_id") @db.Uuid
+  supplierId         String                @map("supplier_id") @db.Uuid
+  invoiceNumber      String                @map("invoice_number")
+  supplierInvoiceRef String?               @map("supplier_invoice_ref")
+  invoiceDate        DateTime              @map("invoice_date") @db.Date
+  dueDate            DateTime?             @map("due_date") @db.Date
+  paymentType        PurchasePaymentType   @map("payment_type")
+  walletId           String?               @map("wallet_id") @db.Uuid
+  walletSettled      Boolean               @default(false) @map("wallet_settled")
+  walletSettlementId String?               @map("wallet_settlement_id") @db.Uuid
+  subtotal           Decimal               @db.Decimal(12, 2)
+  taxAmount          Decimal               @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  discountAmount     Decimal               @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  totalAmount        Decimal               @map("total_amount") @db.Decimal(12, 2)
+  paidAmount         Decimal               @default(0) @map("paid_amount") @db.Decimal(12, 2)
+  settledAmount      Decimal               @default(0) @map("settled_amount") @db.Decimal(12, 2) // الدفعات اللاحقة + المرتجعات المخصومة من الدين لهذه الفاتورة
+  remainingAmount    Decimal               @map("remaining_amount") @db.Decimal(12, 2)
+  currency           Currency              @default(YER)
+  attachmentUrl      String?               @map("attachment_url")
+  notes              String?
+  status             PurchaseInvoiceStatus @default(POSTED)
+  costingMethodUsed  CostingMethod         @default(WEIGHTED_AVERAGE) @map("costing_method_used")
+  dailyClosingId     String?               @map("daily_closing_id") @db.Uuid
+  postedAt           DateTime?             @map("posted_at")
+  voidedAt           DateTime?             @map("voided_at")
+  voidReason         String?               @map("void_reason")
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  worker           Worker?           @relation(fields: [workerId], references: [id])
+  supplier         Supplier          @relation(fields: [supplierId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
+  dailyClosing     DailyClosing?     @relation(fields: [dailyClosingId], references: [id])
+  items            PurchaseItem[]
+  payments         SupplierPayment[]
+  returns          PurchaseReturn[]
+
+  @@unique([storeOwnerId, invoiceNumber])
+  @@index([storeOwnerId, invoiceDate])
+  @@index([storeOwnerId, supplierId, status])
+  @@index([dailyClosingId])
+  @@index([walletId, walletSettled])
+  @@map("purchase_invoices")
+}
+
+model PurchaseItem {
+  id                        String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId              String              @map("store_owner_id") @db.Uuid
+  purchaseInvoiceId         String              @map("purchase_invoice_id") @db.Uuid
+  itemId                    String?             @map("item_id") @db.Uuid // يُربط بالصنف عند ترحيل الفاتورة (POSTED)
+  itemName                  String              @map("item_name")
+  baseUnit                  String              @map("base_unit")
+  unit                      String
+  conversionFactor          Decimal             @default(1) @map("conversion_factor") @db.Decimal(12, 3)
+  quantity                  Decimal             @db.Decimal(12, 3)
+  baseQuantity              Decimal             @map("base_quantity") @db.Decimal(12, 3)
+  unitCostPrice             Decimal             @map("unit_cost_price") @db.Decimal(12, 2)
+  taxAmount                 Decimal             @default(0) @map("tax_amount") @db.Decimal(12, 2)
+  discountAmount            Decimal             @default(0) @map("discount_amount") @db.Decimal(12, 2)
+  totalLineCost             Decimal             @map("total_line_cost") @db.Decimal(12, 2)
+  effectiveBaseUnitCost     Decimal             @map("effective_base_unit_cost") @db.Decimal(12, 2)
+  sellPrice                 Decimal             @map("sell_price") @db.Decimal(12, 2)
+  emergencyPriceMode        EmergencyPriceMode? @map("emergency_price_mode")
+  emergencyPricePlusFixed   Decimal?            @map("emergency_price_plus_fixed") @db.Decimal(12, 2)
+  emergencyPricePlusPercent Decimal?            @map("emergency_price_plus_percent") @db.Decimal(5, 2)
+  emergencyPriceMin         Decimal?            @map("emergency_price_min") @db.Decimal(12, 2)
+  emergencyPriceMax         Decimal?            @map("emergency_price_max") @db.Decimal(12, 2)
+  remainingFifoQty          Decimal             @default(0) @map("remaining_fifo_qty") @db.Decimal(12, 3)
+  returnedQuantity          Decimal             @default(0) @map("returned_quantity") @db.Decimal(12, 3)
+  createdAt                 DateTime            @default(now()) @map("created_at")
+
+  storeOwner      StoreOwner       @relation(fields: [storeOwnerId], references: [id])
+  purchaseInvoice PurchaseInvoice  @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
+  item            Item?            @relation(fields: [itemId], references: [id])
+  returns         PurchaseReturn[]
+
+  @@index([purchaseInvoiceId])
+  @@index([storeOwnerId, itemId])
+  @@map("purchase_items")
+}
+
+model SupplierPayment {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId         String            @map("store_owner_id") @db.Uuid
+  workerId             String?           @map("worker_id") @db.Uuid
+  supplierId           String            @map("supplier_id") @db.Uuid
+  purchaseInvoiceId    String?           @map("purchase_invoice_id") @db.Uuid
+  amount               Decimal           @db.Decimal(12, 2)
+  paymentMethod        PaymentType       @map("payment_method")
+  walletId             String?           @map("wallet_id") @db.Uuid
+  walletSettled        Boolean           @default(false) @map("wallet_settled")
+  walletSettlementId   String?           @map("wallet_settlement_id") @db.Uuid
+  receiptAttachmentUrl String?           @map("receipt_attachment_url")
+  notes                String?
+  dailyClosingId       String?           @map("daily_closing_id") @db.Uuid
+  paidAt               DateTime          @default(now()) @map("paid_at")
+  createdAt            DateTime          @default(now()) @map("created_at")
+
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  worker           Worker?           @relation(fields: [workerId], references: [id])
+  supplier         Supplier          @relation(fields: [supplierId], references: [id])
+  purchaseInvoice  PurchaseInvoice?  @relation(fields: [purchaseInvoiceId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
+  dailyClosing     DailyClosing?     @relation(fields: [dailyClosingId], references: [id])
+
+  @@index([storeOwnerId, supplierId, paidAt])
+  @@index([dailyClosingId])
+  @@index([walletId, walletSettled])
+  @@map("supplier_payments")
+}
+
+model PurchaseReturn {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId      String               @map("store_owner_id") @db.Uuid
+  workerId          String?              @map("worker_id") @db.Uuid
+  purchaseInvoiceId String               @map("purchase_invoice_id") @db.Uuid
+  purchaseItemId    String               @map("purchase_item_id") @db.Uuid
+  supplierId        String               @map("supplier_id") @db.Uuid
+  itemId            String               @map("item_id") @db.Uuid
+  quantity          Decimal              @db.Decimal(12, 3)
+  baseQuantity      Decimal              @map("base_quantity") @db.Decimal(12, 3)
+  unitPrice         Decimal              @map("unit_price") @db.Decimal(12, 2)
+  totalAmount       Decimal              @map("total_amount") @db.Decimal(12, 2)
+  refundMethod      PurchaseRefundMethod @map("refund_method")
+  reason            String
+  returnedAt        DateTime             @default(now()) @map("returned_at")
+  createdAt         DateTime             @default(now()) @map("created_at")
+
+  storeOwner      StoreOwner      @relation(fields: [storeOwnerId], references: [id])
+  worker          Worker?         @relation(fields: [workerId], references: [id])
+  purchaseInvoice PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id])
+  purchaseItem    PurchaseItem    @relation(fields: [purchaseItemId], references: [id])
+  supplier        Supplier        @relation(fields: [supplierId], references: [id])
+  item            Item            @relation(fields: [itemId], references: [id])
+
+  @@index([storeOwnerId, purchaseInvoiceId])
+  @@index([storeOwnerId, supplierId, returnedAt])
+  @@map("purchase_returns")
+}
+
+// ═══════════════════════ جاري المالك وتسوية المحافظ الإلكترونية ═══════════════════════
+
+model OwnerTransaction {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId       String               @map("store_owner_id") @db.Uuid
+  type               OwnerTransactionType
+  amount             Decimal              @db.Decimal(12, 2)
+  paymentMethod      PaymentType          @map("payment_method")
+  walletId           String?              @map("wallet_id") @db.Uuid
+  attachmentUrl      String?              @map("attachment_url")
+  note               String?
+  walletSettled      Boolean              @default(false) @map("wallet_settled")
+  walletSettlementId String?              @map("wallet_settlement_id") @db.Uuid
+  transactedAt       DateTime             @default(now()) @map("transacted_at")
+  createdAt          DateTime             @default(now()) @map("created_at")
+
+  storeOwner       StoreOwner        @relation(fields: [storeOwnerId], references: [id])
+  wallet           Wallet?           @relation(fields: [walletId], references: [id])
+  walletSettlement WalletSettlement? @relation(fields: [walletSettlementId], references: [id])
+
+  @@index([storeOwnerId, transactedAt])
+  @@index([walletId, walletSettled])
+  @@map("owner_transactions")
+}
+
+model WalletSettlement {
+  id                     String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  storeOwnerId           String                 @map("store_owner_id") @db.Uuid
+  walletId               String                 @map("wallet_id") @db.Uuid
+  bookBalanceBefore      Decimal                @map("book_balance_before") @db.Decimal(12, 2)
+  actualProviderBalance  Decimal                @map("actual_provider_balance") @db.Decimal(12, 2)
+  difference             Decimal                @db.Decimal(12, 2)
+  cashOutToDrawer        Decimal                @default(0) @map("cash_out_to_drawer") @db.Decimal(12, 2)
+  bookBalanceAfter       Decimal                @map("book_balance_after") @db.Decimal(12, 2)
+  settledOperationsCount Int                    @default(0) @map("settled_operations_count")
+  status                 WalletSettlementStatus @default(MATCHED)
+  notes                  String?
+  settledAt              DateTime               @default(now()) @map("settled_at")
+  createdAt              DateTime               @default(now()) @map("created_at")
+
+  storeOwner        StoreOwner          @relation(fields: [storeOwnerId], references: [id])
+  wallet            Wallet              @relation(fields: [walletId], references: [id])
+  sales             Sale[]
+  creditPayments    CreditPayment[]
+  purchaseInvoices  PurchaseInvoice[]
+  supplierPayments  SupplierPayment[]
+  rentRecords       RentRecord[]
+  utilityPayments   UtilityPayment[]
+  employeePayments  EmployeePayment[]
+  employeeAdvances  EmployeeAdvance[]
+  workerAdvances    WorkerAdvance[]
+  expenseSettlements ExpenseSettlement[]
+  ownerTransactions OwnerTransaction[]
+
+  @@index([storeOwnerId, walletId, settledAt])
+  @@map("wallet_settlements")
 }

@@ -78,8 +78,14 @@ class ApiClient {
               );
 
               if (refreshResponse.statusCode == 200 || refreshResponse.statusCode == 201) {
-                final newAccess = refreshResponse.data['accessToken'];
-                final newRefresh = refreshResponse.data['refreshToken'];
+                final newAccess = (refreshResponse.data['access_token'] ??
+                        refreshResponse.data['accessToken'] ??
+                        '')
+                    .toString();
+                final newRefresh = (refreshResponse.data['refresh_token'] ??
+                        refreshResponse.data['refreshToken'] ??
+                        '')
+                    .toString();
 
                 final updatedAccount = activeAccount.copyWith(
                   accessToken: newAccess,

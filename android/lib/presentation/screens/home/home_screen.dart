@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/dashboard_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// الشاشة الرئيسية — الشاشة 3 (HOME / 03-home.jpg)
@@ -20,8 +21,15 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       context.read<DashboardProvider>().fetchSummary();
+      final settings = context.read<StoreSettingsProvider>();
+      await settings.fetchSettings();
+      if (mounted) {
+        context
+            .read<AuthProvider>()
+            .syncAllowResponsiblePurchases(settings.allowResponsiblePurchases);
+      }
     });
   }
 
@@ -29,9 +37,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     final dashboard = context.watch<DashboardProvider>();
+    final settings = context.watch<StoreSettingsProvider>();
     final account = auth.currentAccount;
     final summary = dashboard.summary;
     final isClosed = summary?.dayStatus == 'CLOSED';
+    final currencyUnit = summary?.currencySymbol.isNotEmpty == true
+        ? summary!.currencySymbol
+        : settings.currencySymbol;
 
     return AppScaffold(
       title: 'الرئيسية',
@@ -105,7 +117,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: _buildMetricCard(
                     title: 'الصندوق (نقد)',
                     value: summary != null ? _currencyFormat.format(summary.todayCash) : '...',
-                    unit: 'ريال',
+                    unit: currencyUnit,
                     icon: Icons.payments_outlined,
                     color: AppColors.cashGreen,
                   ),
@@ -115,13 +127,39 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: _buildMetricCard(
                     title: 'مبيعات اليوم',
                     value: summary != null ? _currencyFormat.format(summary.totalSales) : '...',
-                    unit: 'ريال',
+                    unit: currencyUnit,
                     icon: Icons.trending_up,
                     color: AppColors.primary,
                   ),
                 ),
               ],
             ),
+            if (auth.canManagePurchases && summary?.purchasesTodayTotal != null) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: _buildMetricCard(
+                      title: 'مشتريات اليوم',
+                      value: _currencyFormat.format(summary!.purchasesTodayTotal ?? 0),
+                      unit: currencyUnit,
+                      icon: Icons.shopping_bag_outlined,
+                      color: AppColors.electronicBlue,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _buildMetricCard(
+                      title: 'مستحقات الموردين',
+                      value: _currencyFormat.format(summary.supplierPayablesTotal ?? 0),
+                      unit: currencyUnit,
+                      icon: Icons.local_shipping_outlined,
+                      color: AppColors.creditOrange,
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 20),
 
             // شبكة الوصول السريع (3x2 Quick Access Grid)
@@ -176,12 +214,33 @@ class _HomeScreenState extends State<HomeScreen> {
                     color: AppColors.electronicBlue,
                     onTap: () => Navigator.pushNamed(context, '/expenses'),
                   ),
+                if (auth.canManagePurchases)
+                  _buildQuickAction(
+                    icon: Icons.shopping_bag_outlined,
+                    label: 'المشتريات',
+                    color: AppColors.primaryDark,
+                    onTap: () => Navigator.pushNamed(context, '/purchases'),
+                  ),
+                if (auth.canManageSuppliers)
+                  _buildQuickAction(
+                    icon: Icons.local_shipping_outlined,
+                    label: 'الموردون',
+                    color: AppColors.creditOrange,
+                    onTap: () => Navigator.pushNamed(context, '/suppliers'),
+                  ),
                 if (auth.canViewReports)
                   _buildQuickAction(
                     icon: Icons.bar_chart,
                     label: 'التقارير',
                     color: AppColors.primary,
                     onTap: () => Navigator.pushNamed(context, '/reports'),
+                  ),
+                if (auth.isOwner)
+                  _buildQuickAction(
+                    icon: Icons.menu_book_outlined,
+                    label: 'دفتر الأستاذ',
+                    color: AppColors.primaryDark,
+                    onTap: () => Navigator.pushNamed(context, '/accounting/ledger'),
                   ),
               ],
             ),

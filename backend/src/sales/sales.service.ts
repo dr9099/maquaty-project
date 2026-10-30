@@ -3,6 +3,7 @@ import { PaymentType, Prisma, StoreOwnerStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { ApiError } from '../common/api-error';
+import { assertValidQuantityForUnit } from '../common/unit-validation';
 import { AuthenticatedUser } from '../common/types';
 import { CreateSaleDto } from './dto/create-sale.dto';
 
@@ -52,10 +53,12 @@ export class SalesService {
         where: { id: dto.walletId, storeOwnerId, isActive: true },
       });
       if (!wallet) throw ApiError.notFound('المحفظة غير موجودة.');
-      const walletAccount = await this.prisma.chartOfAccount.findFirst({
-        where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet.name}` } },
-        select: { code: true },
-      });
+      const walletAccount = wallet.accountCode
+        ? { code: wallet.accountCode }
+        : await this.prisma.chartOfAccount.findFirst({
+            where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet.name}` } },
+            select: { code: true },
+          });
       walletAccountCode = walletAccount?.code ?? '1100'; // احتياط: حساب المحافظ الأب
     }
 
@@ -72,12 +75,17 @@ export class SalesService {
       if (!customer) throw ApiError.notFound('عميل الآجل غير موجود.');
     }
 
+    const ownerSettings = await this.prisma.storeOwner.findUniqueOrThrow({
+      where: { id: storeOwnerId },
+      select: { defaultCostingMethod: true },
+    });
+
     // المعاملة الذرّية: قفل صف الصنف + قفل صف المالك (العداد) + كل الكتابات
     const result = await this.prisma.$transaction(async (tx) => {
       // R-17/BR-073: قفل صف صريح — أول طلب يصل يعالج، والثاني يُرفض فوراً
       const lockedItems = await tx.$queryRaw<
         Array<{
-          id: string; name: string; quantity: Prisma.Decimal;
+          id: string; name: string; unit: string; quantity: Prisma.Decimal;
           cost_price: Prisma.Decimal; sell_price: Prisma.Decimal; deleted_at: Date | null;
           emergency_price_mode: string;
           emergency_price_plus_fixed: Prisma.Decimal | null;
@@ -85,13 +93,15 @@ export class SalesService {
           emergency_price_min: Prisma.Decimal | null;
           emergency_price_max: Prisma.Decimal | null;
         }>
-      >(Prisma.sql`SELECT id, name, quantity, cost_price, sell_price, deleted_at,
+      >(Prisma.sql`SELECT id, name, unit, quantity, cost_price, sell_price, deleted_at,
                           emergency_price_mode::text AS emergency_price_mode,
                           emergency_price_plus_fixed, emergency_price_plus_percent,
                           emergency_price_min, emergency_price_max
                    FROM items WHERE id = ${dto.itemId}::uuid AND store_owner_id = ${storeOwnerId}::uuid FOR UPDATE`);
       const item = lockedItems[0];
       if (!item || item.deleted_at) throw ApiError.notFound('الصنف غير موجود.');
+
+      assertValidQuantityForUnit(item.unit, quantity);
 
       if (quantity.gt(item.quantity)) {
         // رفض فوري دون أي حفظ أو قيد — أول من يحصل على القفل ينفّذ
@@ -141,6 +151,71 @@ export class SalesService {
         priceDifferenceLoss = item.sell_price.minus(unitPrice).mul(quantity).toDecimalPlaces(2);
       }
 
+      // 4.5) احتساب تكلفة البضاعة المباعة (COGS) واستهلاك طبقات FIFO عند تفعيلها
+      let cogs = item.cost_price.mul(quantity).toDecimalPlaces(2);
+      const fifoLayers = await tx.purchaseItem.findMany({
+        where: {
+          storeOwnerId,
+          itemId: item.id,
+          remainingFifoQty: { gt: 0 },
+          purchaseInvoice: { status: 'POSTED' },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      if (fifoLayers.length > 0) {
+        const totalLayeredQty = fifoLayers.reduce(
+          (s, l) => s.plus(l.remainingFifoQty),
+          new Prisma.Decimal(0),
+        );
+        const unlayeredOldestQty = Prisma.Decimal.max(
+          new Prisma.Decimal(0),
+          item.quantity.minus(totalLayeredQty),
+        );
+
+        let qtyToConsume = quantity;
+        let fifoCostAcc = new Prisma.Decimal(0);
+
+        if (unlayeredOldestQty.gt(0)) {
+          const fromUnlayered = Prisma.Decimal.min(unlayeredOldestQty, qtyToConsume);
+          fifoCostAcc = fifoCostAcc.plus(fromUnlayered.mul(item.cost_price));
+          qtyToConsume = qtyToConsume.minus(fromUnlayered);
+        }
+
+        let nextFrontLayerCost: Prisma.Decimal | null = null;
+        for (const layer of fifoLayers) {
+          if (qtyToConsume.gt(0)) {
+            const consumed = Prisma.Decimal.min(layer.remainingFifoQty, qtyToConsume);
+            fifoCostAcc = fifoCostAcc.plus(consumed.mul(layer.effectiveBaseUnitCost));
+            const remLayer = layer.remainingFifoQty.minus(consumed);
+            await tx.purchaseItem.update({
+              where: { id: layer.id },
+              data: { remainingFifoQty: remLayer },
+            });
+            qtyToConsume = qtyToConsume.minus(consumed);
+            if (remLayer.gt(0) && nextFrontLayerCost === null) {
+              nextFrontLayerCost = layer.effectiveBaseUnitCost;
+            }
+          } else if (nextFrontLayerCost === null) {
+            nextFrontLayerCost = layer.effectiveBaseUnitCost;
+          }
+        }
+
+        if (ownerSettings.defaultCostingMethod === 'FIFO') {
+          cogs = fifoCostAcc.toDecimalPlaces(2);
+          // إذا استُهلكت الدفعة الأقدم بالكامل، حدّث items.cost_price لتكلفة الدفعة النشطة التالية
+          const remainingUnlayered = unlayeredOldestQty.minus(
+            Prisma.Decimal.min(unlayeredOldestQty, quantity),
+          );
+          if (remainingUnlayered.lte(0) && nextFrontLayerCost !== null) {
+            await tx.item.update({
+              where: { id: item.id },
+              data: { costPrice: nextFrontLayerCost },
+            });
+          }
+        }
+      }
+
       // 5) خصم الكمية (ضمن نفس القفل والمعاملة)
       await tx.$executeRaw(Prisma.sql`UPDATE items SET quantity = quantity - ${quantity}, updated_at = now()
                                       WHERE id = ${dto.itemId}::uuid`);
@@ -154,6 +229,7 @@ export class SalesService {
           itemId: dto.itemId,
           quantity,
           amount,
+          cogsAmount: cogs,
           paymentType: dto.paymentType,
           walletId: dto.walletId ?? null,
           depositAttachmentUrl: dto.depositAttachmentUrl ?? null,
@@ -191,17 +267,18 @@ export class SalesService {
         referenceId: sale.id,
         lines: revenueLines,
       });
-      const cogs = item.cost_price.mul(quantity).toDecimalPlaces(2);
-      await this.accounting.createBalancedEntries(tx, {
-        storeOwnerId,
-        entryDate,
-        referenceType: 'SALE',
-        referenceId: sale.id,
-        lines: [
-          { accountCode: '5000', debit: cogs.toNumber(), description: 'تكلفة البضاعة المباعة' },
-          { accountCode: '1300', credit: cogs.toNumber(), description: 'خصم المخزون' },
-        ],
-      });
+      if (cogs.gt(0)) {
+        await this.accounting.createBalancedEntries(tx, {
+          storeOwnerId,
+          entryDate,
+          referenceType: 'SALE',
+          referenceId: sale.id,
+          lines: [
+            { accountCode: '5000', debit: cogs.toNumber(), description: 'تكلفة البضاعة المباعة' },
+            { accountCode: '1300', credit: cogs.toNumber(), description: 'خصم المخزون' },
+          ],
+        });
+      }
 
       // 8) عدّاد التجربة: زيادة طالما used < limit (شرط مستقل عن الحالة — BR-040)
       //    بقفل صف المالك لمنع سباق العدّاد بين أجهزة العمال
@@ -393,15 +470,23 @@ export class SalesService {
   }
 
   private async customerTotalDebt(tx: Prisma.TransactionClient, customerId: string): Promise<Prisma.Decimal> {
-    const aggSales = await tx.sale.aggregate({
-      where: { creditCustomerId: customerId, paymentType: 'CREDIT' },
-      _sum: { amount: true },
-    });
-    const aggPayments = await tx.creditPayment.aggregate({
-      where: { creditCustomerId: customerId },
-      _sum: { amount: true },
-    });
-    return (aggSales._sum.amount ?? new Prisma.Decimal(0)).minus(aggPayments._sum.amount ?? 0);
+    const [aggSales, aggPayments, aggReturns] = await Promise.all([
+      tx.sale.aggregate({
+        where: { creditCustomerId: customerId, paymentType: 'CREDIT' },
+        _sum: { amount: true },
+      }),
+      tx.creditPayment.aggregate({
+        where: { creditCustomerId: customerId },
+        _sum: { amount: true },
+      }),
+      tx.return.aggregate({
+        where: { sale: { creditCustomerId: customerId, paymentType: 'CREDIT' } },
+        _sum: { amount: true },
+      }),
+    ]);
+    return (aggSales._sum.amount ?? new Prisma.Decimal(0))
+      .minus(aggPayments._sum.amount ?? 0)
+      .minus(aggReturns._sum.amount ?? 0);
   }
 
   // عتبة تحذير التجربة (BR-041) — تُقرأ من الإعدادات مرة واحدة عند إنشاء الخدمة للطلب

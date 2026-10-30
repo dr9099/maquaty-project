@@ -7,6 +7,7 @@ export type AuthenticatedUser = {
   storeOwnerId?: string;
   workerId?: string;
   isResponsible?: boolean;
+  allowResponsiblePurchases?: boolean;
   scope?: string; // 'set-new-password' | 'mfa' — للتوكنات المحدودة
 };
 

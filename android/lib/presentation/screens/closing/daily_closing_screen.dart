@@ -4,9 +4,10 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/daily_closing_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
-/// شاشة المطابقة اليومية والإغلاق — الشاشة 16 (DAILY_CLOSING / 16-daily-closing.jpg)
+/// شاشة المطابقة اليومية والإغلاق — صندوق كل يوم يبدأ من 0 ريال دون ترحيل من أمس
 class DailyClosingScreen extends StatefulWidget {
   const DailyClosingScreen({super.key});
 
@@ -15,8 +16,7 @@ class DailyClosingScreen extends StatefulWidget {
 }
 
 class _DailyClosingScreenState extends State<DailyClosingScreen> {
-  final _currencyFormat = NumberFormat('#,##0', 'ar');
-  final _cashController = TextEditingController();
+  final _currencyFormat = NumberFormat('#,##0.##', 'ar');
 
   @override
   void initState() {
@@ -26,25 +26,26 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     });
   }
 
-  @override
-  void dispose() {
-    _cashController.dispose();
-    super.dispose();
-  }
-
-  void _showWorkerCashDialog(String workerId, String workerName, double? currentActual) {
-    final controller = TextEditingController(text: currentActual?.toString() ?? '');
+  void _showActualCashDialog(double? currentActual, String symbol) {
+    final controller = TextEditingController(
+      text: currentActual != null ? currentActual.toStringAsFixed(0) : '',
+    );
 
     showDialog(
       context: context,
       builder: (ctx) => Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
-          title: Text('إدخال كاش العامل: $workerName', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+          title: const Text(
+            'إدخال الكاش الفعلي في صندوق اليوم',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+          ),
           content: TextField(
             controller: controller,
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: const InputDecoration(labelText: 'الكاش الفعلي في الدرج (ريال)'),
+            decoration: InputDecoration(
+              labelText: 'المبلغ الفعلي الموجود بالدرج الآن ($symbol)',
+            ),
           ),
           actions: [
             TextButton(
@@ -53,17 +54,27 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
             ),
             ElevatedButton(
               onPressed: () async {
-                final cash = double.tryParse(controller.text) ?? 0.0;
+                final cash = double.tryParse(controller.text);
+                if (cash == null || cash < 0) return;
                 Navigator.pop(ctx);
                 final prov = context.read<DailyClosingProvider>();
-                final ok = await prov.updateWorkerCash(workerId, cash);
+                final ok = await prov.updateActualCash(cash);
                 if (ok && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم حفظ كاش العامل بنجاح')),
+                    const SnackBar(
+                      content: Text('تم تحديث الكاش الفعلي لصندوق اليوم ✅'),
+                    ),
+                  );
+                } else if (mounted && prov.errorMessage != null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      backgroundColor: AppColors.lossRed,
+                      content: Text(prov.errorMessage!),
+                    ),
                   );
                 }
               },
-              child: const Text('حفظ'),
+              child: const Text('حفظ المطابقة'),
             ),
           ],
         ),
@@ -75,9 +86,11 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
   Widget build(BuildContext context) {
     final closingProv = context.watch<DailyClosingProvider>();
     final auth = context.watch<AuthProvider>();
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
     final data = closingProv.closing;
     final isOwner = auth.isOwner;
     final isClosed = data?.isClosed ?? false;
+    final sum = data?.summary ?? const {};
 
     return AppScaffold(
       title: 'المطابقة والإغلاق اليومي',
@@ -86,30 +99,79 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
           : data == null
               ? const Center(child: Text('تعذر تحميل بيانات الإغلاق'))
               : RefreshIndicator(
-                  onRefresh: () => context.read<DailyClosingProvider>().fetchTodayClosing(),
+                  onRefresh: () =>
+                      context.read<DailyClosingProvider>().fetchTodayClosing(),
                   child: ListView(
                     padding: const EdgeInsets.all(16),
                     children: [
+                      // شريط قاعدة الصندوق اليومي المستقل (يبدأ من 0 دائماً)
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.secondary.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AppColors.primary.withOpacity(0.25),
+                          ),
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.info_outline, color: AppColors.primary, size: 20),
+                            SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'رصيد افتتاح صندوق اليوم = 0 دائماً — كل يوم جديد مستقل تماماً ولا يُرحّل إليه صندوق أمس.',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.primary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+
                       // شريط حالة الإغلاق
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
                         decoration: BoxDecoration(
-                          color: isClosed ? AppColors.cashGreen.withOpacity(0.12) : AppColors.primary.withOpacity(0.08),
+                          color: isClosed
+                              ? AppColors.cashGreen.withOpacity(0.12)
+                              : AppColors.primary.withOpacity(0.08),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: isClosed ? AppColors.cashGreen : AppColors.primary.withOpacity(0.3)),
+                          border: Border.all(
+                            color: isClosed
+                                ? AppColors.cashGreen
+                                : AppColors.primary.withOpacity(0.3),
+                          ),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text(
-                              isClosed ? 'حالة اليوم: معتمد ومغلق ✅' : 'حالة اليوم: مفتوح للعمليات',
+                              isClosed
+                                  ? 'حالة اليوم: معتمد ومغلق ✅'
+                                  : 'حالة اليوم: مفتوح للعمليات',
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 14,
-                                color: isClosed ? AppColors.cashGreen : AppColors.primary,
+                                color: isClosed
+                                    ? AppColors.cashGreen
+                                    : AppColors.primary,
                               ),
                             ),
-                            Text(data.closingDate, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                            Text(
+                              data.closingDate,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.textSecondary,
+                              ),
+                            ),
                           ],
                         ),
                       ),
@@ -119,13 +181,21 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
                       Row(
                         children: [
                           Expanded(
-                            child: _metricCard('المتوقع بالنظام', _currencyFormat.format(data.expectedCash), AppColors.primary),
+                            child: _metricCard(
+                              'المتوقع بالنظام',
+                              _currencyFormat.format(data.expectedCash),
+                              symbol,
+                              AppColors.primary,
+                            ),
                           ),
                           const SizedBox(width: 10),
                           Expanded(
                             child: _metricCard(
-                              'الفعلي المحسوب',
-                              data.actualCash != null ? _currencyFormat.format(data.actualCash) : 'لم يُدخل',
+                              'الفعلي بالصندوق',
+                              data.actualCash != null
+                                  ? _currencyFormat.format(data.actualCash)
+                                  : '0',
+                              symbol,
                               AppColors.cashGreen,
                             ),
                           ),
@@ -133,57 +203,123 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
                           Expanded(
                             child: _metricCard(
                               'فرق اليوم',
-                              data.difference != null ? _currencyFormat.format(data.difference) : '0',
-                              (data.difference ?? 0) < 0 ? AppColors.lossRed : AppColors.primary,
+                              data.difference != null
+                                  ? _currencyFormat.format(data.difference)
+                                  : '0',
+                              symbol,
+                              (data.difference ?? 0) < 0
+                                  ? AppColors.lossRed
+                                  : AppColors.primary,
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 12),
 
-                      // جدول كاش العمال الفعلي
-                      const Text(
-                        'كاش العمال في الدرج (المطابقة)',
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppColors.primary),
-                      ),
-                      const SizedBox(height: 10),
+                      if (!isClosed)
+                        OutlinedButton.icon(
+                          onPressed: () =>
+                              _showActualCashDialog(data.actualCash, symbol),
+                          icon: const Icon(Icons.edit_outlined),
+                          label: const Text('إدخال / تعديل الكاش الفعلي في الدرج'),
+                        ),
 
-                      ...data.workers.map((w) {
-                        final workerId = w['worker_id'] ?? '';
-                        final workerName = w['worker_name'] ?? 'عامل';
-                        final double? actual = (w['actual_cash'] as num?)?.toDouble();
-                        final double expected = (w['expected_cash'] as num?)?.toDouble() ?? 0.0;
+                      const SizedBox(height: 18),
 
-                        return Card(
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: AppColors.secondary.withOpacity(0.2),
-                              child: const Icon(Icons.person, color: AppColors.primary),
-                            ),
-                            title: Text(workerName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                            subtitle: Text('المتوقع: ${_currencyFormat.format(expected)} ريال'),
-                            trailing: isClosed
-                                ? Text(
-                                    actual != null ? '${_currencyFormat.format(actual)} ريال' : 'غير مسجل',
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  )
-                                : ElevatedButton(
-                                    style: ElevatedButton.styleFrom(
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                    ),
-                                    onPressed: () => _showWorkerCashDialog(workerId, workerName, actual),
-                                    child: Text(actual != null ? _currencyFormat.format(actual) : 'إدخال الكاش'),
-                                  ),
+                      // تفصيل حركات صندوق اليوم فقط
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'تفصيل حركات صندوق اليوم (من 0)',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                  color: AppColors.primary,
+                                ),
+                              ),
+                              const Divider(height: 16),
+                              _cashLine('رصيد بداية اليوم', 0, symbol),
+                              _cashLine(
+                                '(+) مبيعات نقدية اليوم',
+                                (sum['cash_sales'] as num?)?.toDouble() ?? 0,
+                                symbol,
+                                positive: true,
+                              ),
+                              _cashLine(
+                                '(-) مرتجعات مبيعات نقدية',
+                                (sum['cash_sale_returns'] as num?)?.toDouble() ?? 0,
+                                symbol,
+                                negative: true,
+                              ),
+                              _cashLine(
+                                '(+) تحصيل ديون عملاء نقداً',
+                                (sum['collected_cash_payments'] as num?)
+                                        ?.toDouble() ??
+                                    0,
+                                symbol,
+                                positive: true,
+                              ),
+                              _cashLine(
+                                '(-) مشتريات وسداد موردين نقداً',
+                                ((sum['cash_purchases'] as num?)?.toDouble() ?? 0) +
+                                    ((sum['cash_supplier_payments'] as num?)
+                                            ?.toDouble() ??
+                                        0),
+                                symbol,
+                                negative: true,
+                              ),
+                              _cashLine(
+                                '(-) مصروفات وسلف نقدية اليوم',
+                                (sum['cash_expenses'] as num?)?.toDouble() ?? 0,
+                                symbol,
+                                negative: true,
+                              ),
+                              if (isOwner) ...[
+                                _cashLine(
+                                  '(+) إيداعات المالك النقدية + سحب المحافظ للصندوق',
+                                  ((sum['owner_cash_deposits'] as num?)
+                                              ?.toDouble() ??
+                                          0) +
+                                      ((sum['wallet_cash_outs'] as num?)
+                                              ?.toDouble() ??
+                                          0),
+                                  symbol,
+                                  positive: true,
+                                ),
+                                _cashLine(
+                                  '(-) مسحوبات المالك النقدية',
+                                  (sum['owner_cash_withdrawals'] as num?)
+                                          ?.toDouble() ??
+                                      0,
+                                  symbol,
+                                  negative: true,
+                                ),
+                              ],
+                              const Divider(height: 16),
+                              _cashLine(
+                                '(=) الكاش المتوقع في صندوق اليوم',
+                                data.expectedCash,
+                                symbol,
+                                bold: true,
+                              ),
+                            ],
                           ),
-                        );
-                      }),
-                      const SizedBox(height: 24),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
 
                       // زر اعتماد الإغلاق اليومي (حصري للمالك)
                       if (isOwner && !isClosed)
                         ElevatedButton.icon(
                           icon: const Icon(Icons.check_circle_outline),
-                          label: const Text('اعتماد الإغلاق اليومي وترحيل القيود (R-36)', style: TextStyle(fontSize: 15)),
+                          label: const Text(
+                            'اعتماد الإغلاق اليومي وترحيل فرق الصندوق',
+                            style: TextStyle(fontSize: 15),
+                          ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.primary,
                             padding: const EdgeInsets.symmetric(vertical: 16),
@@ -193,7 +329,17 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
                             final ok = await closingProv.approveClosing();
                             if (ok && mounted) {
                               messenger.showSnackBar(
-                                const SnackBar(content: Text('تم اعتماد الإغلاق اليومي بنجاح 🔒')),
+                                const SnackBar(
+                                  content: Text('تم اعتماد الإغلاق اليومي بنجاح 🔒'),
+                                ),
+                              );
+                            } else if (mounted &&
+                                closingProv.errorMessage != null) {
+                              messenger.showSnackBar(
+                                SnackBar(
+                                  backgroundColor: AppColors.lossRed,
+                                  content: Text(closingProv.errorMessage!),
+                                ),
                               );
                             }
                           },
@@ -204,7 +350,47 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     );
   }
 
-  Widget _metricCard(String label, String value, Color color) {
+  Widget _cashLine(
+    String label,
+    double val,
+    String symbol, {
+    bool positive = false,
+    bool negative = false,
+    bool bold = false,
+  }) {
+    Color color = AppColors.textPrimary;
+    if (positive && val > 0) color = AppColors.cashGreen;
+    if (negative && val > 0) color = AppColors.lossRed;
+    if (bold) color = AppColors.primary;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ),
+          Text(
+            '${_currencyFormat.format(val)} $symbol',
+            style: TextStyle(
+              fontSize: bold ? 14 : 12,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _metricCard(String label, String value, String symbol, Color color) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -215,13 +401,23 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+          ),
           const SizedBox(height: 6),
           Text(
             value,
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: color),
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
           ),
-          const Text('ريال', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
+          Text(
+            symbol,
+            style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
+          ),
         ],
       ),
     );

@@ -40,4 +40,16 @@ export class RecordCreditPaymentDto {
   @IsOptional()
   @IsUUID('all', { message: 'معرف المحفظة يجب أن يكون UUID صالحاً.' })
   walletId?: string;
+
+  @IsOptional()
+  @IsString({ message: 'رابط مرفق الإيداع يجب أن يكون نصاً.' })
+  attachmentUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  depositAttachmentUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }

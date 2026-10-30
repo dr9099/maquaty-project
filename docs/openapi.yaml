@@ -688,6 +688,194 @@ paths:
                   temp_password: { type: string, example: "Xk9#mPq2" }
                   expires_at: { type: string, format: date-time }
 
+  /settings/store:
+    get:
+      summary: جلب إعدادات العملة الموحدة وطريقة احتساب التكلفة للمتجر
+      tags: [Settings]
+      responses:
+        "200": { description: إعدادات المتجر }
+    patch:
+      summary: تحديث العملة الموحدة (قبل الحركات المالية) وطريقة احتساب التكلفة (المالك حصراً)
+      tags: [Settings]
+      responses:
+        "200": { description: تم التحديث }
+        "409": { description: CURRENCY_CHANGE_LOCKED }
+
+  /suppliers:
+    get:
+      summary: قائمة الموردين مع إجمالي الذمم الدائنة (المالك حصراً)
+      tags: [Suppliers]
+      responses:
+        "200": { description: قائمة الموردين المرقمة }
+    post:
+      summary: إنشاء مورد جديد مع رصيد افتتاحي اختياري (المالك حصراً)
+      tags: [Suppliers]
+      responses:
+        "201": { description: تم إنشاء المورد }
+        "409": { description: SUPPLIER_DUPLICATE }
+
+  /suppliers/{id}:
+    get:
+      summary: بيانات المورد التفصيلية
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تفاصيل المورد }
+        "404": { description: NOT_FOUND }
+    patch:
+      summary: تعديل بيانات المورد أو حالته (ACTIVE / SUSPENDED)
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم التحديث }
+    delete:
+      summary: حذف ناعم للمورد بشرط أن يكون رصيده صفراً
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم الحذف الناعم }
+        "409": { description: SUPPLIER_HAS_BALANCE }
+
+  /suppliers/{id}/payments:
+    get:
+      summary: سجل دفعات السداد للمورد
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: قائمة الدفعات }
+    post:
+      summary: تسجيل سند سداد للمورد نقداً أو عبر محفظة إلكترونية
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "201": { description: تم تسجيل الدفعة }
+
+  /suppliers/{id}/statement:
+    get:
+      summary: كشف حساب المورد التراكمي مع دعم تصدير CSV / Excel
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: كشف الحساب }
+
+  /suppliers/{id}/aging:
+    get:
+      summary: تقرير أعمار الديون المستحقة للمورد (0-30، 31-60، 61-90، +90 يوم)
+      tags: [Suppliers]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: أعمار الديون }
+
+  /purchases/preview-costing:
+    post:
+      summary: فحص استباقي لتعارض سعر نفس اليوم وإرجاع خيارات التكلفة الثلاثة بالعربية
+      tags: [Purchases]
+      responses:
+        "200": { description: نتيجة الفحص وخيارات التكلفة }
+
+  /purchases:
+    get:
+      summary: قائمة فواتير المشتريات المرقمة والمفلترة (المالك حصراً)
+      tags: [Purchases]
+      responses:
+        "200": { description: قائمة فواتير الشراء }
+    post:
+      summary: إنشاء فاتورة شراء متعددة البنود والوحدات (DRAFT أو POSTED حتى 200 بند)
+      tags: [Purchases]
+      responses:
+        "201": { description: تم إنشاء الفاتورة }
+        "400": { description: INVOICE_LINES_LIMIT_EXCEEDED }
+        "409": { description: COSTING_METHOD_REQUIRED / SUPPLIER_CREDIT_LIMIT_EXCEEDED / DAY_ALREADY_CLOSED }
+
+  /purchases/{id}:
+    get:
+      summary: تفاصيل فاتورة الشراء مع البنود والدفعات والمرتجعات
+      tags: [Purchases]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تفاصيل الفاتورة }
+        "404": { description: NOT_FOUND }
+    patch:
+      summary: تعديل مسودة فاتورة شراء قبل الاعتماد
+      tags: [Purchases]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم تحديث المسودة }
+        "409": { description: INVOICE_NOT_EDITABLE }
+
+  /purchases/{id}/post:
+    post:
+      summary: اعتماد مسودة فاتورة شراء وترحيلها ذرّياً للمخزون والمحاسبة
+      tags: [Purchases]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم الاعتماد }
+
+  /purchases/{id}/void:
+    post:
+      summary: إلغاء فاتورة شراء معتمدة بقيد عكسي (PURCHASE_VOID)
+      tags: [Purchases]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: تم الإلغاء }
+        "409": { description: INVOICE_CANNOT_VOID }
+
+  /purchases/{id}/returns:
+    get:
+      summary: قائمة مرتجعات المشتريات المرتبطة بالفاتورة
+      tags: [Purchases]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: قائمة المرتجعات }
+    post:
+      summary: تسجيل مرتجع مشتريات قبل إغلاق اليوم وبشرط عدم حدوث أي بيع على الصنف
+      tags: [Purchases]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "201": { description: تم تسجيل المرتجع }
+        "409": { description: PURCHASE_ITEM_HAS_SALES / DAY_ALREADY_CLOSED }
+
+  /reports/purchases-by-supplier:
+    get:
+      summary: تقرير المشتريات حسب المورد (المالك حصراً)
+      tags: [Purchases]
+      responses:
+        "200": { description: التقرير }
+
+  /reports/purchases-by-item:
+    get:
+      summary: تقرير المشتريات حسب الصنف (المالك حصراً)
+      tags: [Purchases]
+      responses:
+        "200": { description: التقرير }
+
+  /reports/supplier-payables:
+    get:
+      summary: تقرير الذمم الدائنة للموردين وأعمار الديون (المالك حصراً)
+      tags: [Purchases]
+      responses:
+        "200": { description: التقرير }
+
+  /reports/profit-margin:
+    get:
+      summary: تقرير هامش الربح الفعلي وصافي الربح (المالك حصراً)
+      tags: [Purchases]
+      responses:
+        "200": { description: التقرير }
+
 tags:
   - name: Auth
   - name: Workers
@@ -695,4 +883,7 @@ tags:
   - name: Sales
   - name: Credit
   - name: DailyClosing
+  - name: Suppliers
+  - name: Purchases
+  - name: Settings
   - name: Admin

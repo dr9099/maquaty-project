@@ -20,7 +20,12 @@ export class AccountStatusGuard implements CanActivate {
     if (user.role === 'WORKER' && user.workerId) {
       const worker = await this.prisma.worker.findUnique({
         where: { id: user.workerId },
-        select: { status: true, isResponsible: true, storeOwnerId: true, storeOwner: { select: { status: true } } },
+        select: {
+          status: true,
+          isResponsible: true,
+          storeOwnerId: true,
+          storeOwner: { select: { status: true, allowResponsiblePurchases: true } },
+        },
       });
       if (!worker || worker.status === 'DELETED') {
         throw ApiError.locked('WORKER_SUSPENDED', 'الحساب غير متاح.');
@@ -31,18 +36,24 @@ export class AccountStatusGuard implements CanActivate {
       if (worker.status === 'SUSPENDED') {
         throw ApiError.locked('WORKER_SUSPENDED', 'الحساب موقوف مؤقتاً. تواصل مع المالك لإعادة تفعيله.');
       }
-      // تحديث لحظي للصفة من قاعدة البيانات
-      request.user = { ...user, isResponsible: worker.isResponsible, storeOwnerId: worker.storeOwnerId };
+      // تحديث لحظي للصفة وصلاحية المشتريات للمسؤول من قاعدة البيانات
+      request.user = {
+        ...user,
+        isResponsible: worker.isResponsible,
+        storeOwnerId: worker.storeOwnerId,
+        allowResponsiblePurchases: worker.isResponsible ? worker.storeOwner.allowResponsiblePurchases : false,
+      };
       return true;
     }
 
     const owner = await this.prisma.storeOwner.findUnique({
       where: { id: user.storeOwnerId! },
-      select: { status: true },
+      select: { status: true, allowResponsiblePurchases: true },
     });
     if (owner && (owner.status === 'TRIAL_EXPIRED' || owner.status === 'EXPIRED' || owner.status === 'SUSPENDED')) {
       throw ApiError.locked(ownerReason(owner.status), ownerMessage(owner.status));
     }
+    request.user = { ...user, allowResponsiblePurchases: true };
     return true;
   }
 }

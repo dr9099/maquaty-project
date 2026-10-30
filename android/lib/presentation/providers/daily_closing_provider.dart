@@ -6,32 +6,41 @@ class DailyClosingData {
   final String id;
   final String closingDate;
   final String status;
+  final double openingCash;
   final double expectedCash;
   final double? actualCash;
   final double? difference;
+  final Map<String, dynamic> summary;
   final List<dynamic> workers;
 
   DailyClosingData({
     required this.id,
     required this.closingDate,
     required this.status,
+    this.openingCash = 0.0,
     required this.expectedCash,
     this.actualCash,
     this.difference,
+    this.summary = const {},
     this.workers = const [],
   });
 
   bool get isClosed => status == 'CLOSED';
 
   factory DailyClosingData.fromJson(Map<String, dynamic> json) {
+    final rawDate = (json['closing_date'] ?? '').toString();
     return DailyClosingData(
-      id: json['id'] ?? '',
-      closingDate: json['closing_date'] ?? '',
-      status: json['status'] ?? 'OPEN',
+      id: (json['closing_id'] ?? json['id'] ?? '').toString(),
+      closingDate: rawDate.length >= 10 ? rawDate.substring(0, 10) : rawDate,
+      status: (json['status'] ?? 'OPEN').toString(),
+      openingCash: (json['opening_cash'] as num?)?.toDouble() ?? 0.0,
       expectedCash: (json['expected_cash'] as num?)?.toDouble() ?? 0.0,
       actualCash: (json['actual_cash'] as num?)?.toDouble(),
       difference: (json['difference'] as num?)?.toDouble(),
-      workers: json['workers'] ?? [],
+      summary: json['summary'] is Map
+          ? Map<String, dynamic>.from(json['summary'])
+          : const {},
+      workers: json['workers'] is List ? json['workers'] : const [],
     );
   }
 }
@@ -49,14 +58,20 @@ class DailyClosingProvider with ChangeNotifier {
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
 
-  Future<void> fetchTodayClosing() async {
+  Future<void> fetchTodayClosing({String? workerId}) async {
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      final res = await _api.get(ApiEndpoints.dailyClosingToday);
-      _closing = DailyClosingData.fromJson(res.data);
+      final res = await _api.get(
+        ApiEndpoints.dailyClosingToday,
+        queryParameters:
+            workerId != null && workerId.isNotEmpty ? {'worker_id': workerId} : null,
+      );
+      if (res.data is Map) {
+        _closing = DailyClosingData.fromJson(Map<String, dynamic>.from(res.data));
+      }
     } catch (e) {
       _errorMessage = e.toString();
     } finally {
@@ -65,15 +80,15 @@ class DailyClosingProvider with ChangeNotifier {
     }
   }
 
-  Future<bool> updateWorkerCash(String workerId, double actualCash) async {
+  Future<bool> updateActualCash(double actualCash) async {
     if (_closing == null) return false;
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
 
     try {
-      await _api.post(
-        ApiEndpoints.dailyClosingWorkerCash(_closing!.id, workerId),
+      await _api.patch(
+        ApiEndpoints.dailyClosingUpdate(_closing!.id),
         data: {'actualCash': actualCash},
       );
       await fetchTodayClosing();
@@ -86,6 +101,11 @@ class DailyClosingProvider with ChangeNotifier {
     }
   }
 
+  Future<bool> updateWorkerCash(String workerId, double actualCash) async {
+    if (_closing == null) return false;
+    return updateActualCash(actualCash);
+  }
+
   Future<bool> approveClosing({double? ownerActualCash}) async {
     if (_closing == null) return false;
     _isLoading = true;
@@ -93,12 +113,13 @@ class DailyClosingProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      await _api.post(
-        ApiEndpoints.dailyClosingApprove(_closing!.id),
-        data: {
-          if (ownerActualCash != null) 'actualCash': ownerActualCash,
-        },
-      );
+      if (ownerActualCash != null) {
+        await _api.patch(
+          ApiEndpoints.dailyClosingUpdate(_closing!.id),
+          data: {'actualCash': ownerActualCash},
+        );
+      }
+      await _api.post(ApiEndpoints.dailyClosingApprove(_closing!.id));
       await fetchTodayClosing();
       return true;
     } catch (e) {

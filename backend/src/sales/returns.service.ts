@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { assertValidQuantityForUnit } from '../common/unit-validation';
 import { AuthenticatedUser } from '../common/types';
 import { CreateReturnDto } from './dto/create-return.dto';
 
@@ -22,12 +23,13 @@ export class ReturnsService {
     const sale = await this.prisma.sale.findFirst({
       where: { id: dto.saleId, storeOwnerId },
       include: {
-        item: { select: { id: true, costPrice: true, sellPrice: true } },
+        item: { select: { id: true, unit: true, costPrice: true, sellPrice: true } },
         dailyClosing: { select: { status: true } },
       },
     });
 
     if (!sale) throw ApiError.notFound('عملية البيع غير موجودة.');
+    assertValidQuantityForUnit(sale.item.unit, dto.quantity);
 
     // 1) فحص ملكية العملية (R-20 / BR-066)
     if (user.role === 'WORKER') {
@@ -76,8 +78,13 @@ export class ReturnsService {
       });
     }
 
+    const resolvedAmount =
+      dto.amount !== undefined
+        ? round2(Number(dto.amount))
+        : round2((Number(sale.amount) * requestedQty) / saleQty);
+
     const returnQtyDecimal = new Prisma.Decimal(dto.quantity);
-    const returnAmountDecimal = new Prisma.Decimal(dto.amount);
+    const returnAmountDecimal = new Prisma.Decimal(resolvedAmount);
 
     return this.prisma.$transaction(async (tx) => {
       // إعادة الكمية للمخزون بقفل تشاؤمي
@@ -90,6 +97,7 @@ export class ReturnsService {
         data: {
           storeOwnerId,
           saleId: sale.id,
+          itemId: sale.itemId,
           workerId: user.role === 'WORKER' ? user.workerId : null,
           quantity: returnQtyDecimal,
           amount: returnAmountDecimal,
@@ -102,11 +110,15 @@ export class ReturnsService {
       if (sale.paymentType === 'ELECTRONIC') {
         if (sale.walletId) {
           const wallet = await tx.wallet.findUnique({ where: { id: sale.walletId } });
-          const walletAccount = await tx.chartOfAccount.findFirst({
-            where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet?.name}` } },
-            select: { code: true },
-          });
-          creditAccount = walletAccount?.code ?? '1100';
+          if (wallet?.accountCode) {
+            creditAccount = wallet.accountCode;
+          } else {
+            const walletAccount = await tx.chartOfAccount.findFirst({
+              where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet?.name}` } },
+              select: { code: true },
+            });
+            creditAccount = walletAccount?.code ?? '1100';
+          }
         } else {
           creditAccount = '1100';
         }
@@ -123,15 +135,19 @@ export class ReturnsService {
         referenceType: 'RETURN',
         referenceId: createdReturn.id,
         lines: [
-          { accountCode: '4000', debit: dto.amount, description: 'مرتجع مبيعات' },
-          { accountCode: creditAccount, credit: dto.amount, description: 'رد قيمة المرتجع' },
+          { accountCode: '4000', debit: resolvedAmount, description: 'مرتجع مبيعات' },
+          { accountCode: creditAccount, credit: resolvedAmount, description: 'رد قيمة المرتجع' },
         ],
       });
 
       // قيد إعادة التكلفة للمخزون:
       // مدين: 1300 (المخزون)
       // دائن: 5000 (تكلفة البضاعة المباعة)
-      const cogsAmount = round2(returnQtyDecimal.mul(sale.item.costPrice).toNumber());
+      const unitCogs =
+        sale.cogsAmount !== null && sale.quantity.gt(0)
+          ? sale.cogsAmount.div(sale.quantity)
+          : sale.item.costPrice;
+      const cogsAmount = round2(returnQtyDecimal.mul(unitCogs).toNumber());
       if (cogsAmount > 0) {
         await this.accounting.createBalancedEntries(tx, {
           storeOwnerId,
@@ -151,7 +167,7 @@ export class ReturnsService {
         actionType: 'SALE_RETURN',
         targetType: 'return',
         targetId: createdReturn.id,
-        newValue: { sale_id: sale.id, quantity: dto.quantity, amount: dto.amount },
+        newValue: { sale_id: sale.id, quantity: dto.quantity, amount: resolvedAmount, reason: dto.reason },
         ipAddress: ip,
         result: 'SUCCESS',
       });

@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:provider/provider.dart';
+import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/network/api_client.dart';
 import '../../providers/credit_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
-/// شاشة الآجل وإدارة ديون العملاء — الشاشة 11 (CREDIT / 11-credit.jpg)
+/// شاشة الآجل وإدارة ديون العملاء وكشف الحساب مع المرتجعات والسداد الإلكتروني — الشاشة 11 (CREDIT)
 class CreditScreen extends StatefulWidget {
   const CreditScreen({super.key});
 
@@ -14,14 +18,26 @@ class CreditScreen extends StatefulWidget {
 }
 
 class _CreditScreenState extends State<CreditScreen> {
-  final _currencyFormat = NumberFormat('#,##0', 'ar');
+  final _currencyFormat = NumberFormat('#,##0.##', 'ar');
   final _searchController = TextEditingController();
+  List<Map<String, dynamic>> _wallets = [];
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       context.read<CreditProvider>().fetchCustomers();
+      try {
+        final res = await ApiClient().get(ApiEndpoints.wallets);
+        if (res.data is List && mounted) {
+          setState(() {
+            _wallets = (res.data as List)
+                .map((e) => Map<String, dynamic>.from(e))
+                .where((w) => w['is_active'] != false)
+                .toList();
+          });
+        }
+      } catch (_) {}
     });
   }
 
@@ -35,13 +51,17 @@ class _CreditScreenState extends State<CreditScreen> {
     final nameController = TextEditingController();
     final phoneController = TextEditingController();
     final limitController = TextEditingController();
+    final symbol = context.read<StoreSettingsProvider>().currencySymbol;
 
     showDialog(
       context: context,
       builder: (ctx) => Directionality(
         textDirection: TextDirection.rtl,
         child: AlertDialog(
-          title: const Text('إضافة عميل آجل جديد', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          title: const Text(
+            'إضافة عميل آجل جديد',
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -59,7 +79,7 @@ class _CreditScreenState extends State<CreditScreen> {
               TextField(
                 controller: limitController,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'سقف الائتمان بالريال (اختياري)'),
+                decoration: InputDecoration(labelText: 'سقف الائتمان ($symbol - اختياري)'),
               ),
             ],
           ),
@@ -106,64 +126,316 @@ class _CreditScreenState extends State<CreditScreen> {
   void _showRecordPaymentDialog(CreditCustomer customer) {
     final amountController = TextEditingController();
     final notesController = TextEditingController();
+    final symbol = context.read<StoreSettingsProvider>().currencySymbol;
+    String paymentMethod = 'CASH';
+    String? selectedWalletId =
+        _wallets.isNotEmpty ? _wallets.first['id']?.toString() : null;
+    String? attachmentUrl;
 
     showDialog(
       context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: Text('سداد دفعة للعميل: ${customer.name}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('إجمالي الدين الحالي: ${_currencyFormat.format(customer.totalDebt)} ريال', style: const TextStyle(color: AppColors.lossRed, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 14),
-              TextField(
-                controller: amountController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'المبلغ المدفوع (ريال)'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            title: Text(
+              'سداد دفعة للعميل: ${customer.name}',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'إجمالي الدين الحالي: ${_currencyFormat.format(customer.totalDebt)} $symbol',
+                    style: const TextStyle(
+                      color: AppColors.lossRed,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: amountController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(labelText: 'المبلغ المدفوع ($symbol) *'),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    value: paymentMethod,
+                    decoration: const InputDecoration(labelText: 'طريقة السداد *'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'CASH',
+                        child: Text('نقداً (إلى صندوق المحل)'),
+                      ),
+                      DropdownMenuItem(
+                        value: 'ELECTRONIC',
+                        child: Text('محفظة إلكترونية'),
+                      ),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) {
+                        setDialogState(() => paymentMethod = val);
+                      }
+                    },
+                  ),
+                  if (paymentMethod == 'ELECTRONIC') ...[
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      value: selectedWalletId,
+                      decoration: const InputDecoration(
+                        labelText: 'اختيار المحفظة الإلكترونية *',
+                      ),
+                      items: _wallets
+                          .map(
+                            (w) => DropdownMenuItem<String>(
+                              value: w['id']?.toString(),
+                              child: Text(w['name']?.toString() ?? 'محفظة'),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (val) => setDialogState(() => selectedWalletId = val),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      icon: Icon(
+                        attachmentUrl != null
+                            ? Icons.check_circle
+                            : Icons.camera_alt_outlined,
+                        color: attachmentUrl != null
+                            ? AppColors.cashGreen
+                            : AppColors.primary,
+                      ),
+                      label: Text(
+                        attachmentUrl != null
+                            ? 'تم إرفاق صورة إشعار السداد ✅'
+                            : 'إرفاق صورة إشعار الإيداع (إلزامي) *',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      onPressed: () async {
+                        try {
+                          final picked = await ImagePicker().pickImage(
+                            source: ImageSource.gallery,
+                            imageQuality: 75,
+                          );
+                          if (picked != null) {
+                            setDialogState(() => attachmentUrl = picked.path);
+                          }
+                        } catch (_) {
+                          setDialogState(() {
+                            attachmentUrl =
+                                'https://attachments.maqouti.test/credit-payment.jpg';
+                          });
+                        }
+                      },
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: notesController,
+                    decoration: const InputDecoration(labelText: 'ملاحظات السداد (اختياري)'),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: notesController,
-                decoration: const InputDecoration(labelText: 'ملاحظات السداد (اختياري)'),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.cashGreen),
+                onPressed: () async {
+                  final amount = double.tryParse(amountController.text) ?? 0.0;
+                  if (amount <= 0) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('المبلغ يجب أن يكون أكبر من صفر')),
+                    );
+                    return;
+                  }
+                  if (paymentMethod == 'ELECTRONIC') {
+                    if (selectedWalletId == null || selectedWalletId!.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          backgroundColor: AppColors.lossRed,
+                          content: Text('يرجى اختيار المحفظة الإلكترونية أولاً'),
+                        ),
+                      );
+                      return;
+                    }
+                    if (attachmentUrl == null || attachmentUrl!.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          backgroundColor: AppColors.lossRed,
+                          content: Text(
+                            'صورة إشعار الإيداع إلزامية عند السداد عبر محفظة إلكترونية',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                  }
+
+                  final credit = context.read<CreditProvider>();
+                  final success = await credit.recordPayment(
+                    customerId: customer.id,
+                    amount: amount,
+                    paymentMethod: paymentMethod,
+                    walletId: paymentMethod == 'ELECTRONIC' ? selectedWalletId : null,
+                    attachmentUrl: paymentMethod == 'ELECTRONIC' ? attachmentUrl : null,
+                    notes: notesController.text.trim(),
+                  );
+
+                  if (!mounted) return;
+                  if (success) {
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('تم تسجيل دفعة السداد بنجاح ✅')),
+                    );
+                  } else if (credit.errorMessage != null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        backgroundColor: AppColors.lossRed,
+                        content: Text(credit.errorMessage!),
+                      ),
+                    );
+                  }
+                },
+                child: const Text('تأكيد السداد'),
               ),
             ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء'),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.cashGreen),
-              onPressed: () async {
-                final amount = double.tryParse(amountController.text) ?? 0.0;
-                if (amount <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('المبلغ يجب أن يكون أكبر من صفر')),
-                  );
-                  return;
-                }
+        ),
+      ),
+    );
+  }
 
-                Navigator.pop(ctx);
-                final credit = context.read<CreditProvider>();
-                final success = await credit.recordPayment(
-                  customerId: customer.id,
-                  amount: amount,
-                  notes: notesController.text.trim(),
-                );
+  Future<void> _showStatementSheet(CreditCustomer customer) async {
+    final symbol = context.read<StoreSettingsProvider>().currencySymbol;
+    final statement = await context.read<CreditProvider>().fetchStatement(customer.id);
+    if (!mounted) return;
 
-                if (success && mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم تسجيل دفعة السداد بنجاح ✅')),
-                  );
-                }
-              },
-              child: const Text('تأكيد السداد'),
+    final txList = (statement?['transactions'] is List)
+        ? (statement!['transactions'] as List)
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList()
+        : <Map<String, dynamic>>[];
+    final balance =
+        ((statement?['customer']?['total_debt'] ?? customer.totalDebt) as num)
+            .toDouble();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.7,
+          maxChildSize: 0.92,
+          builder: (_, scrollCtrl) => Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'كشف حساب العميل: ${customer.name}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      'الرصيد: ${_currencyFormat.format(balance)} $symbol',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        color: balance > 0 ? AppColors.lossRed : AppColors.cashGreen,
+                      ),
+                    ),
+                  ],
+                ),
+                const Divider(height: 20),
+                Expanded(
+                  child: txList.isEmpty
+                      ? const Center(child: Text('لا توجد حركات مسجلة لهذا العميل.'))
+                      : ListView.separated(
+                          controller: scrollCtrl,
+                          itemCount: txList.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 6),
+                          itemBuilder: (_, idx) {
+                            final tx = txList[idx];
+                            final type = (tx['type'] ?? '').toString();
+                            final amt = (tx['amount'] as num?)?.toDouble() ?? 0.0;
+                            final isSale = type == 'SALE';
+                            final isReturn = type == 'RETURN';
+                            final label = isSale
+                                ? 'بيع آجل (+)'
+                                : isReturn
+                                    ? 'مرتجع مبيعات آجلة (-)'
+                                    : 'دفعة سداد (-)';
+                            final desc = (tx['item_name'] ??
+                                    tx['reason'] ??
+                                    tx['note'] ??
+                                    tx['payment_method'] ??
+                                    '')
+                                .toString();
+                            final dateStr = (tx['date'] ?? '').toString();
+
+                            return Card(
+                              child: ListTile(
+                                dense: true,
+                                leading: Icon(
+                                  isSale
+                                      ? Icons.shopping_cart_outlined
+                                      : isReturn
+                                          ? Icons.assignment_return_outlined
+                                          : Icons.payments_outlined,
+                                  color: isSale
+                                      ? AppColors.creditOrange
+                                      : AppColors.cashGreen,
+                                ),
+                                title: Text(
+                                  label,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  [
+                                    if (desc.isNotEmpty) desc,
+                                    if (dateStr.length >= 10) dateStr.substring(0, 10),
+                                  ].join(' · '),
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                                trailing: Text(
+                                  '${isSale ? "+" : "-"}${_currencyFormat.format(amt)} $symbol',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: isSale
+                                        ? AppColors.lossRed
+                                        : AppColors.cashGreen,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -172,6 +444,7 @@ class _CreditScreenState extends State<CreditScreen> {
   @override
   Widget build(BuildContext context) {
     final credit = context.watch<CreditProvider>();
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
     final customers = credit.customers;
 
     double totalAllDebts = 0.0;
@@ -203,17 +476,27 @@ class _CreditScreenState extends State<CreditScreen> {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('إجمالي الديون القائمة (الذمم)', style: TextStyle(color: AppColors.surfaceMuted, fontSize: 12)),
+                    const Text(
+                      'إجمالي الديون القائمة (حساب 1200)',
+                      style: TextStyle(color: AppColors.surfaceMuted, fontSize: 12),
+                    ),
                     const SizedBox(height: 4),
                     Text(
-                      '${_currencyFormat.format(totalAllDebts)} ريال',
-                      style: const TextStyle(color: AppColors.secondary, fontSize: 20, fontWeight: FontWeight.bold),
+                      '${_currencyFormat.format(totalAllDebts)} $symbol',
+                      style: const TextStyle(
+                        color: AppColors.secondary,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
                 Text(
                   '${customers.length} عميل',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
@@ -225,12 +508,19 @@ class _CreditScreenState extends State<CreditScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : customers.isEmpty
                     ? const Center(
-                        child: Text('لا يوجد عملاء آجل مسجلين بعد', style: TextStyle(color: AppColors.textSecondary)),
+                        child: Text(
+                          'لا يوجد عملاء آجل مسجلين بعد',
+                          style: TextStyle(color: AppColors.textSecondary),
+                        ),
                       )
                     : RefreshIndicator(
-                        onRefresh: () => context.read<CreditProvider>().fetchCustomers(),
+                        onRefresh: () =>
+                            context.read<CreditProvider>().fetchCustomers(),
                         child: ListView.separated(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
                           itemCount: customers.length,
                           separatorBuilder: (_, __) => const SizedBox(height: 8),
                           itemBuilder: (context, index) {
@@ -243,40 +533,64 @@ class _CreditScreenState extends State<CreditScreen> {
                                 child: Column(
                                   children: [
                                     Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceBetween,
                                       children: [
                                         Row(
                                           children: [
                                             CircleAvatar(
-                                              backgroundColor: AppColors.secondary.withOpacity(0.2),
-                                              child: const Icon(Icons.person, color: AppColors.primary),
+                                              backgroundColor: AppColors.secondary
+                                                  .withOpacity(0.2),
+                                              child: const Icon(
+                                                Icons.person,
+                                                color: AppColors.primary,
+                                              ),
                                             ),
                                             const SizedBox(width: 10),
                                             Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
                                               children: [
-                                                Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                                Text(
+                                                  c.name,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 14,
+                                                  ),
+                                                ),
                                                 if (c.phone != null)
-                                                  Text(c.phone!, style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                                                  Text(
+                                                    c.phone!,
+                                                    style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: AppColors.textMuted,
+                                                    ),
+                                                  ),
                                               ],
                                             ),
                                           ],
                                         ),
                                         Column(
-                                          crossAxisAlignment: CrossAxisAlignment.end,
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.end,
                                           children: [
                                             Text(
-                                              '${_currencyFormat.format(c.totalDebt)} ريال',
+                                              '${_currencyFormat.format(c.totalDebt)} $symbol',
                                               style: TextStyle(
                                                 fontWeight: FontWeight.bold,
                                                 fontSize: 15,
-                                                color: c.totalDebt > 0 ? AppColors.lossRed : AppColors.cashGreen,
+                                                color: c.totalDebt > 0
+                                                    ? AppColors.lossRed
+                                                    : AppColors.cashGreen,
                                               ),
                                             ),
                                             if (hasLimit)
                                               Text(
-                                                'السقف: ${_currencyFormat.format(c.creditLimit)} ريال',
-                                                style: const TextStyle(fontSize: 10, color: AppColors.textMuted),
+                                                'السقف: ${_currencyFormat.format(c.creditLimit)} $symbol',
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                  color: AppColors.textMuted,
+                                                ),
                                               ),
                                           ],
                                         ),
@@ -286,10 +600,29 @@ class _CreditScreenState extends State<CreditScreen> {
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.end,
                                       children: [
+                                        TextButton.icon(
+                                          icon: const Icon(
+                                            Icons.receipt_long_outlined,
+                                            size: 16,
+                                          ),
+                                          label: const Text(
+                                            'كشف الحساب',
+                                            style: TextStyle(fontSize: 12),
+                                          ),
+                                          onPressed: () => _showStatementSheet(c),
+                                        ),
+                                        const SizedBox(width: 8),
                                         OutlinedButton.icon(
-                                          icon: const Icon(Icons.add_card, size: 16),
-                                          label: const Text('سداد دفعة', style: TextStyle(fontSize: 12)),
-                                          onPressed: () => _showRecordPaymentDialog(c),
+                                          icon: const Icon(
+                                            Icons.add_card,
+                                            size: 16,
+                                          ),
+                                          label: const Text(
+                                            'سداد دفعة',
+                                            style: TextStyle(fontSize: 12),
+                                          ),
+                                          onPressed: () =>
+                                              _showRecordPaymentDialog(c),
                                         ),
                                       ],
                                     ),

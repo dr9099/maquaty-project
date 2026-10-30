@@ -2,15 +2,26 @@ import { Injectable } from '@nestjs/common';
 import { EmergencyPriceMode, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApiError } from '../common/api-error';
+import { assertValidQuantityForUnit } from '../common/unit-validation';
+import { COSTING_OPTIONS_AR } from '../settings/settings.service';
 import { CreateItemDto, UpdateItemDto } from './dto/items.dto';
 
-// الأصناف — API_SPEC القسم 3 (حصري للمالك — ITEMS_MANAGE)
+// الأصناف — API_SPEC القسم 3 + آلية التكلفة لنفس اليوم وقاعدة القات 24-48 ساعة
 @Injectable()
 export class ItemsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(storeOwnerId: string, dto: CreateItemDto) {
-    this.validateEmergencyPolicy(dto.emergencyPriceMode, dto.emergencyPricePlusFixed, dto.emergencyPricePlusPercent, dto.emergencyPriceMin, dto.emergencyPriceMax);
+    const trimmedName = dto.name.trim();
+    const trimmedUnit = dto.unit.trim();
+    assertValidQuantityForUnit(trimmedUnit, dto.quantity);
+    this.validateEmergencyPolicy(
+      dto.emergencyPriceMode,
+      dto.emergencyPricePlusFixed,
+      dto.emergencyPricePlusPercent,
+      dto.emergencyPriceMin,
+      dto.emergencyPriceMax,
+    );
     const entryDate = startOfToday();
     const warnings: string[] = [];
     if (dto.sellPrice < dto.costPrice) {
@@ -18,32 +29,111 @@ export class ItemsService {
       warnings.push('سعر البيع أقل من سعر التكلفة — تأكد أن هذا مقصود.');
     }
 
-    // BR-003: توريد كمية إضافية لنفس الصنف (نفس الاسم والوحدة ونفس السعرين، نفس يوم الإدخال) تُجمع
-    const existing = await this.prisma.item.findFirst({
+    // فحص وجود نفس الصنف (الاسم + الوحدة) في نفس اليوم
+    const existingSameDay = await this.prisma.item.findFirst({
       where: {
         storeOwnerId,
         deletedAt: null,
-        name: dto.name,
-        unit: dto.unit,
-        costPrice: dto.costPrice,
-        sellPrice: dto.sellPrice,
+        name: trimmedName,
+        unit: trimmedUnit,
         entryDate,
       },
+      orderBy: { createdAt: 'desc' },
     });
 
-    if (existing) {
+    if (existingSameDay) {
+      const oldQty = Number(existingSameDay.quantity);
+      const oldCost = Number(existingSameDay.costPrice);
+      const newQty = Number(dto.quantity);
+      const newCost = Number(dto.costPrice);
+
+      // 1) قاعدة القات (24-48 ساعة / نفاد الكمية = 0): اعتماد السعر الجديد تلقائياً دون نافذة منبثقة
+      if (oldQty <= 0) {
+        const item = await this.prisma.item.update({
+          where: { id: existingSameDay.id },
+          data: {
+            quantity: new Prisma.Decimal(newQty),
+            costPrice: new Prisma.Decimal(newCost),
+            sellPrice: new Prisma.Decimal(dto.sellPrice),
+            ...(dto.emergencyPriceMode !== undefined ? { emergencyPriceMode: dto.emergencyPriceMode } : {}),
+            ...(dto.emergencyPricePlusFixed !== undefined ? { emergencyPricePlusFixed: dto.emergencyPricePlusFixed } : {}),
+            ...(dto.emergencyPricePlusPercent !== undefined ? { emergencyPricePlusPercent: dto.emergencyPricePlusPercent } : {}),
+            ...(dto.emergencyPriceMin !== undefined ? { emergencyPriceMin: dto.emergencyPriceMin } : {}),
+            ...(dto.emergencyPriceMax !== undefined ? { emergencyPriceMax: dto.emergencyPriceMax } : {}),
+          },
+        });
+        return { item, merged: true, warnings };
+      }
+
+      // 2) نفس سعر التكلفة في نفس اليوم -> دمج تلقائي (BR-003)
+      if (Math.abs(oldCost - newCost) < 0.005) {
+        const item = await this.prisma.item.update({
+          where: { id: existingSameDay.id },
+          data: {
+            quantity: { increment: new Prisma.Decimal(newQty) },
+            sellPrice: new Prisma.Decimal(dto.sellPrice),
+          },
+        });
+        return { item, merged: true, warnings };
+      }
+
+      // 3) سعر تكلفة مختلف لنفس الصنف في نفس اليوم مع وجود كمية متبقية (> 0)
+      const weightedAvg =
+        Math.round((((oldQty * oldCost + newQty * newCost) / (oldQty + newQty)) + Number.EPSILON) * 100) / 100;
+
+      if (!dto.costingMethod) {
+        throw ApiError.conflict(
+          'COSTING_METHOD_REQUIRED',
+          `هذا الصنف (${trimmedName}) موجود اليوم بكمية متبقية (${oldQty} ${trimmedUnit}) بسعر شراء (${oldCost}) مختلف عن السعر الجديد (${newCost}). اختر طريقة احتساب التكلفة المناسبة:`,
+          {
+            conflicts: [
+              {
+                item_id: existingSameDay.id,
+                item_name: trimmedName,
+                unit: trimmedUnit,
+                existing_quantity: oldQty,
+                existing_cost_price: oldCost,
+                incoming_quantity: newQty,
+                incoming_cost_price: newCost,
+                weighted_average_cost: weightedAvg,
+              },
+            ],
+            costing_options: COSTING_OPTIONS_AR,
+          },
+        );
+      }
+
+      let nextCostPrice = oldCost;
+      if (dto.costingMethod === 'WEIGHTED_AVERAGE') {
+        nextCostPrice = weightedAvg;
+      } else if (dto.costingMethod === 'LAST_PRICE') {
+        nextCostPrice = newCost;
+      } else if (dto.costingMethod === 'FIFO') {
+        // بيع الكمية القديمة بسعرها أولاً ثم الجديدة بسعرها
+        nextCostPrice = oldCost;
+      }
+
       const item = await this.prisma.item.update({
-        where: { id: existing.id },
-        data: { quantity: { increment: dto.quantity } },
+        where: { id: existingSameDay.id },
+        data: {
+          quantity: { increment: new Prisma.Decimal(newQty) },
+          costPrice: new Prisma.Decimal(nextCostPrice),
+          sellPrice: new Prisma.Decimal(dto.sellPrice),
+          ...(dto.emergencyPriceMode !== undefined ? { emergencyPriceMode: dto.emergencyPriceMode } : {}),
+          ...(dto.emergencyPricePlusFixed !== undefined ? { emergencyPricePlusFixed: dto.emergencyPricePlusFixed } : {}),
+          ...(dto.emergencyPricePlusPercent !== undefined ? { emergencyPricePlusPercent: dto.emergencyPricePlusPercent } : {}),
+          ...(dto.emergencyPriceMin !== undefined ? { emergencyPriceMin: dto.emergencyPriceMin } : {}),
+          ...(dto.emergencyPriceMax !== undefined ? { emergencyPriceMax: dto.emergencyPriceMax } : {}),
+        },
       });
-      return { item, merged: true, warnings };
+      return { item, merged: true, costing_method_used: dto.costingMethod, warnings };
     }
 
     const item = await this.prisma.item.create({
       data: {
         storeOwnerId,
-        name: dto.name,
-        unit: dto.unit,
+        name: trimmedName,
+        unit: trimmedUnit,
         quantity: dto.quantity,
         costPrice: dto.costPrice,
         sellPrice: dto.sellPrice,
@@ -69,15 +159,27 @@ export class ItemsService {
   }
 
   // المخزون (INVENTORY) — للمالك: كامل؛ للعامل: بلا قيمة متبقية إلا بصلاحية؛ لا cost_price للعامل أبداً
-  async inventory(storeOwnerId: string, opts: { isWorker: boolean; showSellPrices: boolean }, search?: string) {
+  async inventory(
+    storeOwnerId: string,
+    opts: { isWorker: boolean; showSellPrices: boolean },
+    search?: string,
+    limitParam?: number,
+    offsetParam?: number,
+  ) {
+    const trimmedSearch = search?.trim();
+    const take = Math.min(Math.max(limitParam ?? (trimmedSearch ? 20 : 100), 1), 200);
+    const skip = Math.max(offsetParam ?? 0, 0);
+
     const items = await this.prisma.item.findMany({
       where: {
         storeOwnerId,
         deletedAt: null,
         entryDate: startOfToday(),
-        ...(search ? { name: { contains: search } } : {}),
+        ...(trimmedSearch ? { name: { contains: trimmedSearch, mode: 'insensitive' } } : {}),
       },
       orderBy: { createdAt: 'asc' },
+      take,
+      skip,
     });
 
     return items.map((it) => {
@@ -86,6 +188,7 @@ export class ItemsService {
         name: it.name,
         unit: it.unit,
         remaining_qty: it.quantity,
+        sell_price: it.sellPrice,
       };
       if (!opts.isWorker || opts.showSellPrices) {
         base.remaining_value = mul(it.quantity, it.sellPrice);
@@ -93,7 +196,6 @@ export class ItemsService {
       // حماية خادمية أساسية: cost_price لا يُعاد لأي Worker إطلاقاً
       if (!opts.isWorker) {
         base.cost_price = it.costPrice;
-        base.sell_price = it.sellPrice;
         base.emergency_price_mode = it.emergencyPriceMode;
       }
       return base;

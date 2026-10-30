@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { assertValidQuantityForUnit } from '../common/unit-validation';
 import { AuthenticatedUser } from '../common/types';
 import { RecordDamagedGoodsDto } from './dto/damaged-goods.dto';
 
@@ -48,14 +49,16 @@ export class DamagedGoodsService {
     // المعاملة الذرّية: قفل صف الصنف + خصم المخزون + قيد المحاسبة (R-17 / BR-073)
     return this.prisma.$transaction(async (tx) => {
       const lockedItems = await tx.$queryRaw<
-        Array<{ id: string; quantity: Prisma.Decimal; cost_price: Prisma.Decimal; deleted_at: Date | null }>
+        Array<{ id: string; unit: string; quantity: Prisma.Decimal; cost_price: Prisma.Decimal; deleted_at: Date | null }>
       >(
-        Prisma.sql`SELECT id, quantity, cost_price, deleted_at FROM items
+        Prisma.sql`SELECT id, unit, quantity, cost_price, deleted_at FROM items
                    WHERE id = ${dto.itemId}::uuid AND store_owner_id = ${storeOwnerId}::uuid FOR UPDATE`,
       );
 
       const item = lockedItems[0];
       if (!item || item.deleted_at) throw ApiError.notFound('الصنف غير موجود.');
+
+      assertValidQuantityForUnit(item.unit, requestedQuantity);
 
       if (requestedQuantity.gt(item.quantity)) {
         throw ApiError.conflict('INSUFFICIENT_STOCK', 'الكمية التالفة تتجاوز المخزون المتوفر.', {

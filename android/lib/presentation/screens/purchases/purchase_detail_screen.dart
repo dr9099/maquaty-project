@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/purchases_provider.dart';
@@ -155,6 +156,8 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
     );
     final reasonCtrl = TextEditingController();
     String refundMethod = inv.remainingAmount > 0 ? 'DEBT_REDUCTION' : 'CASH_REFUND';
+    final isKilo = isKiloUnit(line.unit) || isKiloUnit(line.baseUnit);
+    String returnUnit = 'KILO';
 
     showModalBottomSheet(
       context: context,
@@ -191,13 +194,59 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                       'ملاحظة: يُسمح بمرتجع المشتريات قبل إغلاق اليوم وفقط إذا لم تتم أي عملية بيع من هذا الصنف.',
                       style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
                     ),
-                    const SizedBox(height: 12),
+                    if (isKilo) ...[
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          const Text(
+                            'وحدة الإرجاع: ',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
+                          ),
+                          const SizedBox(width: 8),
+                          ChoiceChip(
+                            label: const Text('كيلو', style: TextStyle(fontSize: 11)),
+                            selected: returnUnit == 'KILO',
+                            onSelected: (sel) {
+                              if (sel) {
+                                setModalState(() {
+                                  returnUnit = 'KILO';
+                                  final q = double.tryParse(qtyCtrl.text) ?? 1000.0;
+                                  qtyCtrl.text = (q / 1000.0).toStringAsFixed(3).replaceFirst(RegExp(r'\.?0+$'), '');
+                                });
+                              }
+                            },
+                          ),
+                          const SizedBox(width: 6),
+                          ChoiceChip(
+                            label: const Text('جرام', style: TextStyle(fontSize: 11)),
+                            selected: returnUnit == 'GRAM',
+                            onSelected: (sel) {
+                              if (sel) {
+                                setModalState(() {
+                                  returnUnit = 'GRAM';
+                                  final q = double.tryParse(qtyCtrl.text) ?? 1.0;
+                                  qtyCtrl.text = (q * 1000).toInt().toString();
+                                });
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 10),
                     TextFormField(
                       controller: qtyCtrl,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => setModalState(() {}),
+                      keyboardType: returnUnit == 'GRAM'
+                          ? TextInputType.number
+                          : const TextInputType.numberWithOptions(decimal: true),
                       decoration: InputDecoration(
-                        labelText:
-                            'الكمية المرتجعة بـ (${line.unit}) — المتاح: ${line.remainingReturnableQty}',
+                        labelText: returnUnit == 'GRAM'
+                            ? 'الكمية المرتجعة بالجرام (جم)'
+                            : 'الكمية المرتجعة بـ (${line.unit}) — المتاح: ${line.remainingReturnableQty}',
+                        helperText: isKilo && qtyCtrl.text.isNotEmpty
+                            ? '= ${formatQuantityDisplay(returnUnit == "GRAM" ? (double.tryParse(qtyCtrl.text) ?? 0.0) * 0.001 : (double.tryParse(qtyCtrl.text) ?? 0.0), unit: "كيلو")}'
+                            : null,
                       ),
                     ),
                     const SizedBox(height: 10),
@@ -237,12 +286,22 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                           );
                           return;
                         }
+                        if (returnUnit == 'GRAM' && qty != qty.truncateToDouble()) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              backgroundColor: AppColors.lossRed,
+                              content: Text('الكمية المرتجعة بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.'),
+                            ),
+                          );
+                          return;
+                        }
                         final prov = context.read<PurchasesProvider>();
                         final invProv = context.read<InventoryProvider>();
                         final ok = await prov.createReturn(
                           invoiceId: inv.id,
                           purchaseItemId: line.id,
                           quantity: qty,
+                          quantityUnit: isKilo && returnUnit == 'GRAM' ? 'GRAM' : 'KILO',
                           refundMethod: refundMethod,
                           reason: reasonCtrl.text,
                           storeOwnerId: context.read<AuthProvider>().currentAccount?.id,
@@ -420,8 +479,7 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
-                                  'الكمية: ${_numFormat.format(line.quantity)} ${line.unit}'
-                                  '${line.conversionFactor != 1 ? " (= ${_numFormat.format(line.baseQuantity)} ${line.baseUnit})" : ""}'
+                                  'الكمية: ${line.displayQuantity}'
                                   ' · تكلفة الوحدة: ${_numFormat.format(line.unitCostPrice)} $symbol'
                                   ' · سعر البيع: ${_numFormat.format(line.sellPrice)} $symbol',
                                   style: const TextStyle(
@@ -433,7 +491,7 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                                   Padding(
                                     padding: const EdgeInsets.only(top: 4),
                                     child: Text(
-                                      'مرتجع سابق: ${_numFormat.format(line.returnedQuantity)} ${line.unit}',
+                                      'مرتجع سابق: ${line.displayReturnedQuantity}',
                                       style: const TextStyle(
                                         fontSize: 11,
                                         color: AppColors.lossRed,
@@ -474,7 +532,7 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                                 Icons.assignment_return,
                                 color: AppColors.lossRed,
                               ),
-                              title: Text('${r.itemName} (كمية: ${_numFormat.format(r.quantity)})'),
+                              title: Text('${r.itemName} (كمية: ${r.displayQuantity})'),
                               subtitle: Text(
                                 'السبب: ${r.reason} · ${r.refundMethod == "CASH_REFUND" ? "استرداد نقدي" : "خصم من رصيد المورد"}',
                                 style: const TextStyle(fontSize: 11),

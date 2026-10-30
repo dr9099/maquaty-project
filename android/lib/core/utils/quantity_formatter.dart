@@ -42,7 +42,7 @@ bool isWeightUnit(String? unit) {
 /// - "220 جم"، "1 كجم"، "1 كجم و100 جم" بدلاً من "0.220 كيلو" أو "1.1 كيلو".
 /// - إذا كانت الوحدة الأساسية هي الجرام بالفعل: تُعرض كما هي دون قسمة أو ضرب (مثل: "220 جرام").
 /// - للوحدات العددية المنفصلة (حبة، ربطة): تُعرض كما هي مع اسم الوحدة (مثل: "3 حبة").
-String formatQuantityDisplay(dynamic quantity, {String unit = 'كيلو'}) {
+String formatQuantityDisplay(dynamic quantity, {String? unit}) {
   if (quantity == null) return '';
 
   double numVal;
@@ -54,7 +54,7 @@ String formatQuantityDisplay(dynamic quantity, {String unit = 'كيلو'}) {
     numVal = 0.0;
   }
 
-  final cleanUnit = unit.trim();
+  final cleanUnit = (unit ?? 'كيلو').trim();
   final isNegative = numVal < 0;
   final absVal = numVal.abs();
   final prefix = isNegative ? '-' : '';

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/sales_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
@@ -38,7 +39,7 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
       totalAmount += s.amount;
       totalQuantity += s.quantity;
       if (!grouped.containsKey(s.itemName)) {
-        grouped[s.itemName] = _ItemSoldSummary(itemName: s.itemName);
+        grouped[s.itemName] = _ItemSoldSummary(itemName: s.itemName, unit: s.unit);
       }
       grouped[s.itemName]!.totalQuantity += s.quantity;
       grouped[s.itemName]!.totalAmount += s.amount;
@@ -129,7 +130,7 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
                                       ),
                                     ),
                                     Text(
-                                      '${item.totalQuantity} كجم/حبة',
+                                      formatQuantityDisplay(item.totalQuantity, unit: item.unit),
                                       style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
                                     ),
                                   ],
@@ -148,9 +149,10 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
 
 class _ItemSoldSummary {
   final String itemName;
+  final String? unit;
   double totalQuantity = 0.0;
   double totalAmount = 0.0;
   int operationsCount = 0;
 
-  _ItemSoldSummary({required this.itemName});
+  _ItemSoldSummary({required this.itemName, this.unit});
 }

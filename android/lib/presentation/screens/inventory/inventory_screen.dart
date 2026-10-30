@@ -132,7 +132,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 subtitle: Row(
                                   children: [
                                     Text(
-                                      'المتبقي: ${item.quantity} ${item.unit}',
+                                      'المتبقي: ${item.displayQuantity}',
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,

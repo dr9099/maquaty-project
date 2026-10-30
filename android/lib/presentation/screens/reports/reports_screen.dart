@@ -229,7 +229,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   String _recordSubtitle(Map<String, dynamic> r, String symbol) {
     if (r.containsKey('supplier_name') && r.containsKey('invoice_number')) {
-      return 'فاتورة ${r['invoice_number']} · المورد: ${r['supplier_name']} · كمية: ${r['quantity']} ${r['unit'] ?? ""}';
+      final qtyText = (r['quantity_display'] ?? '').toString();
+      final displayQty = qtyText.isNotEmpty ? qtyText : '${r['quantity']} ${r['unit'] ?? ""}';
+      return 'فاتورة ${r['invoice_number']} · المورد: ${r['supplier_name']} · كمية: $displayQty';
     }
     if (r.containsKey('invoices_count') && r.containsKey('total_paid')) {
       return 'عدد الفواتير: ${r['invoices_count']} · مسدد: ${r['total_paid']} · متبقي: ${r['total_remaining']}';

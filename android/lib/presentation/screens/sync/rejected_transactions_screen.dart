@@ -3,6 +3,7 @@ import 'package:intl/intl.dart' hide TextDirection;
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/quantity_formatter.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// شاشة معالجة العمليات المرفوضة — الشاشة 28 (REJECTED_TRANSACTIONS / 28-rejected-transactions.jpg)
@@ -119,6 +120,8 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
                       final payload = item['attempted_payload'] ?? {};
                       final double amount = (payload['amount'] as num?)?.toDouble() ?? 0.0;
                       final double quantity = (payload['quantity'] as num?)?.toDouble() ?? 0.0;
+                      final String? rawUnit = payload['unit']?.toString();
+                      final String displayQty = formatQuantityDisplay(quantity, unit: rawUnit);
 
                       final isCreditLimit = reasonCode == 'CREDIT_LIMIT_EXCEEDED';
                       final isStock = reasonCode == 'INSUFFICIENT_STOCK';
@@ -150,7 +153,7 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
                               ),
                               const SizedBox(height: 6),
                               Text(reasonDetail, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-                              Text('الكمية المحاولة: $quantity', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+                              Text('الكمية المحاولة: $displayQty', style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
                               const Divider(height: 18),
 
                               // خيارات المعالجة المعتمدة حسب سبب الرفض (R-30)

@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/purchases_provider.dart';
@@ -334,7 +335,19 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
         );
         return;
       }
-      if (!ItemModel.isWeightUnitName(unit) && qty != qty.truncateToDouble()) {
+      if (unit == 'جرام') {
+        if (qty != qty.truncateToDouble()) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: AppColors.lossRed,
+              content: Text(
+                'البند رقم ${i + 1}: الكمية بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.',
+              ),
+            ),
+          );
+          return;
+        }
+      } else if (!ItemModel.isWeightUnitName(unit) && qty != qty.truncateToDouble()) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: AppColors.lossRed,
@@ -645,7 +658,7 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                                       .map(
                                         (it) => PopupMenuItem(
                                           value: it,
-                                          child: Text('${it.name} (متوفر: ${it.quantity} ${it.unit})'),
+                                          child: Text('${it.name} (متوفر: ${formatQuantityDisplay(it.quantity, unit: it.unit)})'),
                                         ),
                                       )
                                       .toList(),
@@ -677,7 +690,7 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                       Wrap(
                         spacing: 6,
                         runSpacing: 4,
-                        children: ['كيلو', 'حبة', 'ربطة', 'حزمة'].map((presetUnit) {
+                        children: ['كيلو', 'جرام', 'حبة', 'ربطة', 'حزمة'].map((presetUnit) {
                           final isSelected = line.unitCtrl.text.trim() == presetUnit;
                           return ChoiceChip(
                             label: Text(presetUnit, style: const TextStyle(fontSize: 11)),
@@ -687,7 +700,13 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                             onSelected: (_) {
                               setState(() {
                                 line.unitCtrl.text = presetUnit;
-                                if ((double.tryParse(line.factorCtrl.text) ?? 1.0) == 1.0) {
+                                if (presetUnit == 'جرام') {
+                                  line.baseUnitCtrl.text = 'كيلو';
+                                  line.factorCtrl.text = '0.001';
+                                } else if (presetUnit == 'كيلو') {
+                                  line.baseUnitCtrl.text = 'كيلو';
+                                  line.factorCtrl.text = '1.0';
+                                } else if ((double.tryParse(line.factorCtrl.text) ?? 1.0) == 1.0) {
                                   line.baseUnitCtrl.text = presetUnit;
                                 }
                               });
@@ -739,17 +758,41 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                       ),
                       const SizedBox(height: 8),
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Expanded(
-                            child: TextFormField(
-                              controller: line.qtyCtrl,
-                              onChanged: (_) => setState(() {}),
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(decimal: true),
-                              decoration: const InputDecoration(
-                                labelText: 'الكمية *',
-                                isDense: true,
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                TextFormField(
+                                  controller: line.qtyCtrl,
+                                  onChanged: (_) => setState(() {}),
+                                  keyboardType: line.unitCtrl.text.trim() == 'جرام'
+                                      ? TextInputType.number
+                                      : const TextInputType.numberWithOptions(decimal: true),
+                                  decoration: InputDecoration(
+                                    labelText: line.unitCtrl.text.trim() == 'جرام'
+                                        ? 'الكمية (بالجرام) *'
+                                        : 'الكمية *',
+                                    isDense: true,
+                                  ),
+                                ),
+                                if (line.unitCtrl.text.trim() == 'جرام' || line.unitCtrl.text.trim() == 'كيلو') ...[
+                                  const SizedBox(height: 3),
+                                  Builder(builder: (_) {
+                                    final q = double.tryParse(line.qtyCtrl.text) ?? 0.0;
+                                    final effKg = line.unitCtrl.text.trim() == 'جرام' ? q * 0.001 : q;
+                                    return Text(
+                                      '= ${formatQuantityDisplay(effKg, unit: "كيلو")}',
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: AppColors.primary,
+                                      ),
+                                    );
+                                  }),
+                                ],
+                              ],
                             ),
                           ),
                           const SizedBox(width: 8),
@@ -760,7 +803,9 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                               keyboardType:
                                   const TextInputType.numberWithOptions(decimal: true),
                               decoration: InputDecoration(
-                                labelText: 'تكلفة الوحدة ($symbol) *',
+                                labelText: line.unitCtrl.text.trim() == 'جرام'
+                                    ? 'تكلفة الجرام ($symbol) *'
+                                    : 'تكلفة الوحدة ($symbol) *',
                                 isDense: true,
                               ),
                             ),
@@ -772,7 +817,9 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                               keyboardType:
                                   const TextInputType.numberWithOptions(decimal: true),
                               decoration: InputDecoration(
-                                labelText: 'سعر البيع ($symbol) *',
+                                labelText: line.unitCtrl.text.trim() == 'جرام'
+                                    ? 'سعر الكيلو ($symbol) *'
+                                    : 'سعر البيع ($symbol) *',
                                 isDense: true,
                               ),
                             ),

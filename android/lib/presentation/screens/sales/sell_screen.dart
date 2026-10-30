@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/credit_provider.dart';
 import '../../providers/inventory_provider.dart';
@@ -29,6 +30,7 @@ class _SellScreenState extends State<SellScreen> {
 
   ItemModel? _selectedItem;
   String _paymentType = 'CASH'; // CASH | ELECTRONIC | CREDIT
+  String _salesWeightUnit = 'KILO'; // KILO | GRAM (الافتراضي كيلو)
   String? _selectedCustomerId;
   String? _selectedWalletId;
   String? _depositAttachmentUrl;
@@ -70,6 +72,7 @@ class _SellScreenState extends State<SellScreen> {
   void _onItemChanged(ItemModel? item) {
     setState(() {
       _selectedItem = item;
+      _salesWeightUnit = 'KILO'; // الافتراضي دائماً كيلو
       if (item != null && !item.isWeightUnit) {
         final curQty = double.tryParse(_qtyController.text) ?? 1.0;
         if (curQty != curQty.truncateToDouble()) {
@@ -82,6 +85,7 @@ class _SellScreenState extends State<SellScreen> {
 
   void _setQuickFraction(double qty) {
     setState(() {
+      _salesWeightUnit = 'KILO';
       _qtyController.text = qty == qty.truncateToDouble()
           ? qty.toStringAsFixed(0)
           : qty.toString();
@@ -96,7 +100,14 @@ class _SellScreenState extends State<SellScreen> {
         ? (double.tryParse(_emergencyPriceController.text) ?? _selectedItem!.sellPrice)
         : _selectedItem!.sellPrice;
 
-    final total = qty * unitPrice;
+    double total;
+    if (_salesWeightUnit == 'GRAM' && _selectedItem!.isKiloUnit) {
+      // إدخال بالجرام: إجمالي السعر = (الجرامات ÷ 1000) × سعر الكيلو
+      total = (qty / 1000.0) * unitPrice;
+    } else {
+      total = qty * unitPrice;
+    }
+
     _amountController.text = total == total.truncateToDouble()
         ? total.toStringAsFixed(0)
         : total.toStringAsFixed(2);
@@ -120,7 +131,17 @@ class _SellScreenState extends State<SellScreen> {
       return;
     }
 
-    if (!_selectedItem!.isWeightUnit && qty != qty.truncateToDouble()) {
+    if (_salesWeightUnit == 'GRAM') {
+      if (qty != qty.truncateToDouble()) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: AppColors.lossRed,
+            content: Text('الكمية بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.'),
+          ),
+        );
+        return;
+      }
+    } else if (!_selectedItem!.isWeightUnit && qty != qty.truncateToDouble()) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           backgroundColor: AppColors.lossRed,
@@ -155,12 +176,10 @@ class _SellScreenState extends State<SellScreen> {
     }
 
     final symbol = context.read<StoreSettingsProvider>().currencySymbol;
-    final unitLabel = _selectedItem!.unit;
-    String qtyDisplay = '$qty $unitLabel';
-    if (_selectedItem!.isKiloUnit) {
-      if (qty == 0.5) qtyDisplay = 'نصف كيلو (0.5 $unitLabel)';
-      if (qty == 0.25) qtyDisplay = 'ربع كيلو (0.25 $unitLabel)';
-    }
+    final effectiveKiloQty = (_salesWeightUnit == 'GRAM' && _selectedItem!.isKiloUnit)
+        ? (qty / 1000.0)
+        : qty;
+    final qtyDisplay = formatQuantityDisplay(effectiveKiloQty, unit: _selectedItem!.unit);
 
     showModalBottomSheet(
       context: context,
@@ -178,7 +197,7 @@ class _SellScreenState extends State<SellScreen> {
               ),
               const SizedBox(height: 14),
               _rowInfo('الصنف', _selectedItem!.name),
-              _rowInfo('الكمية والوحدة', qtyDisplay),
+              _rowInfo('الكمية والوزن', qtyDisplay),
               _rowInfo('المبلغ الإجمالي', '${_currencyFormat.format(amount)} $symbol'),
               _rowInfo('طريقة الدفع', _paymentType == 'CASH' ? 'نقداً' : _paymentType == 'ELECTRONIC' ? 'إلكتروني' : 'آجل'),
               if (_isEmergency)
@@ -203,6 +222,7 @@ class _SellScreenState extends State<SellScreen> {
     final success = await sales.createSale(
       itemId: _selectedItem!.id,
       quantity: qty,
+      quantityUnit: (_salesWeightUnit == 'GRAM' && _selectedItem!.isKiloUnit) ? 'GRAM' : 'KILO',
       amount: amount,
       paymentType: _paymentType,
       walletId: _paymentType == 'ELECTRONIC' ? _selectedWalletId : null,
@@ -282,7 +302,7 @@ class _SellScreenState extends State<SellScreen> {
               items: items.map((item) {
                 return DropdownMenuItem<ItemModel>(
                   value: item,
-                  child: Text('${item.name} (${item.quantity} ${item.unit} متوفر)'),
+                  child: Text('${item.name} (${formatQuantityDisplay(item.quantity, unit: item.unit)} متوفر)'),
                 );
               }).toList(),
               onChanged: _onItemChanged,
@@ -301,7 +321,7 @@ class _SellScreenState extends State<SellScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'المتوفر: ${_selectedItem!.quantity} ${_selectedItem!.unit}',
+                      'المتوفر: ${formatQuantityDisplay(_selectedItem!.quantity, unit: _selectedItem!.unit)}',
                       style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
                     ),
                     Text(
@@ -317,76 +337,153 @@ class _SellScreenState extends State<SellScreen> {
               ),
             const SizedBox(height: 12),
 
-            // أزرار التجزئة السريعة للكيلو (كيلو / نصف كيلو / ربع كيلو) مع حساب السعر تلقائياً
+            // أزرار التجزئة السريعة واختيار وحدة الإدخال (كيلو / جرام)
             if (_selectedItem != null && _selectedItem!.isKiloUnit) ...[
-              const Text(
-                'مقدار البيع (حساب تلقائي من سعر الكيلو)',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.primary,
-                ),
-              ),
-              const SizedBox(height: 6),
               Row(
                 children: [
-                  Expanded(
-                    child: ChoiceChip(
-                      label: Text(
-                        'كيلو (${_currencyFormat.format(_selectedItem!.sellPrice)})',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                      ),
-                      selected: currentQty == 1.0,
-                      selectedColor: AppColors.secondary.withOpacity(0.6),
-                      onSelected: (_) => _setQuickFraction(1.0),
+                  const Text(
+                    'وحدة الإدخال: ',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.primary,
                     ),
                   ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: ChoiceChip(
-                      label: Text(
-                        'نصف كيلو (${_currencyFormat.format(_selectedItem!.sellPrice * 0.5)})',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                      ),
-                      selected: currentQty == 0.5,
-                      selectedColor: AppColors.secondary.withOpacity(0.6),
-                      onSelected: (_) => _setQuickFraction(0.5),
-                    ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('كيلو', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    selected: _salesWeightUnit == 'KILO',
+                    selectedColor: AppColors.secondary.withOpacity(0.6),
+                    onSelected: (selected) {
+                      if (selected && _salesWeightUnit != 'KILO') {
+                        setState(() {
+                          _salesWeightUnit = 'KILO';
+                          final cur = double.tryParse(_qtyController.text) ?? 1000.0;
+                          _qtyController.text = (cur / 1000.0).toStringAsFixed(3).replaceFirst(RegExp(r'\.?0+$'), '');
+                          _recalculateAmount();
+                        });
+                      }
+                    },
                   ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: ChoiceChip(
-                      label: Text(
-                        'ربع كيلو (${_currencyFormat.format(_selectedItem!.sellPrice * 0.25)})',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                      ),
-                      selected: currentQty == 0.25,
-                      selectedColor: AppColors.secondary.withOpacity(0.6),
-                      onSelected: (_) => _setQuickFraction(0.25),
-                    ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: const Text('جرام', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                    selected: _salesWeightUnit == 'GRAM',
+                    selectedColor: AppColors.secondary.withOpacity(0.6),
+                    onSelected: (selected) {
+                      if (selected && _salesWeightUnit != 'GRAM') {
+                        setState(() {
+                          _salesWeightUnit = 'GRAM';
+                          final cur = double.tryParse(_qtyController.text) ?? 1.0;
+                          _qtyController.text = (cur * 1000).toInt().toString();
+                          _recalculateAmount();
+                        });
+                      }
+                    },
                   ),
                 ],
               ),
+              const SizedBox(height: 8),
+
+              // أزرار التجزئة السريعة للكيلو (تظهر فقط عند اختيار وحدة الكيلو)
+              if (_salesWeightUnit == 'KILO') ...[
+                const Text(
+                  'مقدار البيع (حساب تلقائي من سعر الكيلو)',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: AppColors.primary,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ChoiceChip(
+                        label: Text(
+                          'كيلو (${_currencyFormat.format(_selectedItem!.sellPrice)})',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                        selected: currentQty == 1.0,
+                        selectedColor: AppColors.secondary.withOpacity(0.6),
+                        onSelected: (_) => _setQuickFraction(1.0),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: ChoiceChip(
+                        label: Text(
+                          'نصف كيلو (${_currencyFormat.format(_selectedItem!.sellPrice * 0.5)})',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                        selected: currentQty == 0.5,
+                        selectedColor: AppColors.secondary.withOpacity(0.6),
+                        onSelected: (_) => _setQuickFraction(0.5),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: ChoiceChip(
+                        label: Text(
+                          'ربع كيلو (${_currencyFormat.format(_selectedItem!.sellPrice * 0.25)})',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                        selected: currentQty == 0.25,
+                        selectedColor: AppColors.secondary.withOpacity(0.6),
+                        onSelected: (_) => _setQuickFraction(0.25),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 12),
             ],
 
             // حقلا الكمية والمبلغ
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: TextFormField(
-                    controller: _qtyController,
-                    keyboardType: TextInputType.numberWithOptions(
-                      decimal: _selectedItem?.isWeightUnit ?? true,
-                    ),
-                    decoration: InputDecoration(
-                      labelText: _selectedItem != null
-                          ? 'الكمية (${_selectedItem!.unit})'
-                          : 'الكمية',
-                    ),
-                    onChanged: (_) {
-                      setState(() => _recalculateAmount());
-                    },
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      TextFormField(
+                        controller: _qtyController,
+                        keyboardType: _salesWeightUnit == 'GRAM'
+                            ? TextInputType.number
+                            : TextInputType.numberWithOptions(
+                                decimal: _selectedItem?.isWeightUnit ?? true,
+                              ),
+                        decoration: InputDecoration(
+                          labelText: _selectedItem != null
+                              ? (_salesWeightUnit == 'GRAM'
+                                  ? 'الوزن بالجرام (جم)'
+                                  : 'الكمية (${_selectedItem!.unit})')
+                              : 'الكمية',
+                        ),
+                        onChanged: (_) {
+                          setState(() => _recalculateAmount());
+                        },
+                      ),
+                      if (_selectedItem != null && _selectedItem!.isKiloUnit) ...[
+                        const SizedBox(height: 4),
+                        Builder(
+                          builder: (_) {
+                            final rawQty = double.tryParse(_qtyController.text) ?? 0.0;
+                            final effKg = _salesWeightUnit == 'GRAM' ? rawQty / 1000.0 : rawQty;
+                            final helper = formatQuantityDisplay(effKg, unit: 'كيلو');
+                            return Text(
+                              '= $helper',
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.primary,
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ],
                   ),
                 ),
                 const SizedBox(width: 12),

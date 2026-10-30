@@ -114,7 +114,7 @@ class _DamagedGoodsScreenState extends State<DamagedGoodsScreen> {
               items: items.map((item) {
                 return DropdownMenuItem<ItemModel>(
                   value: item,
-                  child: Text('${item.name} (${item.quantity} متوفر)'),
+                  child: Text('${item.name} (${item.displayQuantity} متوفر)'),
                 );
               }).toList(),
               onChanged: (item) => setState(() => _selectedItem = item),
@@ -124,9 +124,11 @@ class _DamagedGoodsScreenState extends State<DamagedGoodsScreen> {
             TextFormField(
               controller: _qtyController,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: const InputDecoration(
-                labelText: 'الكمية التالفة (كجم/حبة)',
-                prefixIcon: Icon(Icons.scale_outlined),
+              decoration: InputDecoration(
+                labelText: _selectedItem != null
+                    ? 'الكمية التالفة (${_selectedItem!.unit})'
+                    : 'الكمية التالفة',
+                prefixIcon: const Icon(Icons.scale_outlined),
               ),
             ),
             const SizedBox(height: 14),

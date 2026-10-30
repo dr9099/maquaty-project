@@ -327,7 +327,7 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
             const SizedBox(height: 6),
             Text(
               isWeight
-                  ? 'وحدة الوزن ($_resolvedUnit): يدعم البيع بالكيلو ونصف الكيلو وربع الكيلو مع حساب السعر تلقائياً.'
+                  ? 'وحدة الوزن ($_resolvedUnit): يدعم البيع بالكيلو ونصف الكيلو وربع الكيلو وبالجرام مع حساب السعر تلقائياً.'
                   : 'وحدة عددية ($_resolvedUnit): يُباع بالعدد الصحيح فقط ولا يقبل الكسور.',
               style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
             ),

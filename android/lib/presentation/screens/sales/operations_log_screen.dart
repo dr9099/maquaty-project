@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/sales_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
@@ -26,75 +27,141 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
   }
 
   void _showReturnDialog(SaleRecord sale) {
-    final qtyController = TextEditingController(text: sale.quantity.toString());
+    final isKilo = isKiloUnit(sale.unit);
+    String returnUnit = 'KILO';
+    final qtyController = TextEditingController(
+      text: sale.quantity == sale.quantity.truncateToDouble()
+          ? sale.quantity.toStringAsFixed(0)
+          : sale.quantity.toString(),
+    );
     final reasonController = TextEditingController();
 
     showDialog(
       context: context,
-      builder: (ctx) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('تسجيل مرتجع مبيعات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('الصنف: ${sale.itemName}', style: const TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 6),
-              Text('المبلغ الأصلي: ${_currencyFormat.format(sale.amount)} ريال'),
-              const SizedBox(height: 14),
-              TextField(
-                controller: qtyController,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'الكمية المرتجعة'),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return Directionality(
+            textDirection: TextDirection.rtl,
+            child: AlertDialog(
+              title: const Text('تسجيل مرتجع مبيعات', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('الصنف: ${sale.itemName}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Text('المبلغ الأصلي: ${_currencyFormat.format(sale.amount)} ريال'),
+                  Text('الكمية المباعة: ${sale.displayQuantity}', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+                  if (isKilo) ...[
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        const Text('وحدة الإرجاع: ', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary)),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: const Text('كيلو', style: TextStyle(fontSize: 11)),
+                          selected: returnUnit == 'KILO',
+                          onSelected: (sel) {
+                            if (sel) {
+                              setDialogState(() {
+                                returnUnit = 'KILO';
+                                final q = double.tryParse(qtyController.text) ?? 1000.0;
+                                qtyController.text = (q / 1000.0).toStringAsFixed(3).replaceFirst(RegExp(r'\.?0+$'), '');
+                              });
+                            }
+                          },
+                        ),
+                        const SizedBox(width: 6),
+                        ChoiceChip(
+                          label: const Text('جرام', style: TextStyle(fontSize: 11)),
+                          selected: returnUnit == 'GRAM',
+                          onSelected: (sel) {
+                            if (sel) {
+                              setDialogState(() {
+                                returnUnit = 'GRAM';
+                                final q = double.tryParse(qtyController.text) ?? 1.0;
+                                qtyController.text = (q * 1000).toInt().toString();
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: qtyController,
+                    onChanged: (_) => setDialogState(() {}),
+                    keyboardType: returnUnit == 'GRAM'
+                        ? TextInputType.number
+                        : const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: returnUnit == 'GRAM' ? 'الكمية المرتجعة بالجرام (جم)' : 'الكمية المرتجعة (${sale.unit})',
+                      helperText: isKilo && qtyController.text.isNotEmpty
+                          ? '= ${formatQuantityDisplay(returnUnit == "GRAM" ? (double.tryParse(qtyController.text) ?? 0.0) * 0.001 : (double.tryParse(qtyController.text) ?? 0.0), unit: "كيلو")}'
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: reasonController,
+                    decoration: const InputDecoration(labelText: 'سبب الإرجاع (إلزامي)'),
+                  ),
+                ],
               ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: reasonController,
-                decoration: const InputDecoration(labelText: 'سبب الإرجاع (إلزامي)'),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('إلغاء'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('إلغاء'),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.lossRed),
+                  onPressed: () async {
+                    final qty = double.tryParse(qtyController.text) ?? 0.0;
+                    final reason = reasonController.text.trim();
+
+                    if (qty <= 0 || reason.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('الكمية والسبب مطلوبان')),
+                      );
+                      return;
+                    }
+
+                    if (returnUnit == 'GRAM' && qty != qty.truncateToDouble()) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          backgroundColor: AppColors.lossRed,
+                          content: Text('الكمية بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.'),
+                        ),
+                      );
+                      return;
+                    }
+
+                    Navigator.pop(ctx);
+                    final sales = context.read<SalesProvider>();
+                    final success = await sales.processReturn(
+                      saleId: sale.id,
+                      quantity: qty,
+                      quantityUnit: isKilo && returnUnit == 'GRAM' ? 'GRAM' : 'KILO',
+                      reason: reason,
+                    );
+
+                    if (success && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('تم تسجيل المرتجع بنجاح وعكس القيد ✅')),
+                      );
+                    } else if (mounted && sales.errorMessage != null) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(sales.errorMessage!)),
+                      );
+                    }
+                  },
+                  child: const Text('تأكيد الإرجاع'),
+                ),
+              ],
             ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.lossRed),
-              onPressed: () async {
-                final qty = double.tryParse(qtyController.text) ?? 0.0;
-                final reason = reasonController.text.trim();
-
-                if (qty <= 0 || reason.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('الكمية والسبب مطلوبان')),
-                  );
-                  return;
-                }
-
-                Navigator.pop(ctx);
-                final sales = context.read<SalesProvider>();
-                final success = await sales.processReturn(
-                  saleId: sale.id,
-                  quantity: qty,
-                  reason: reason,
-                );
-
-                if (success && mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('تم تسجيل المرتجع بنجاح وعكس القيد ✅')),
-                  );
-                } else if (mounted && sales.errorMessage != null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(sales.errorMessage!)),
-                  );
-                }
-              },
-              child: const Text('تأكيد الإرجاع'),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
@@ -172,7 +239,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
-                                    'الكمية: ${sale.quantity} · طريقة الدفع: ${sale.paymentType == "CASH" ? "نقد" : sale.paymentType == "ELECTRONIC" ? "إلكتروني" : "آجل"}',
+                                    'الكمية: ${sale.displayQuantity} · طريقة الدفع: ${sale.paymentType == "CASH" ? "نقد" : sale.paymentType == "ELECTRONIC" ? "إلكتروني" : "آجل"}',
                                     style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
                                   ),
                                   Text(

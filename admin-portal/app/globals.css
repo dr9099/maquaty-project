@@ -1,0 +1,63 @@
+@font-face {
+  font-family: 'Titr';
+  src: url('/fonts/Titr.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-cream text-ink antialiased;
+    font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+  }
+
+  ::selection {
+    @apply bg-brand-200 text-brand-900;
+  }
+
+  :focus-visible {
+    outline: 2px solid #8BAE55;
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .field-label {
+    @apply mb-1.5 block text-sm font-semibold text-brand-900;
+  }
+
+  .field-input {
+    @apply w-full rounded-xl border border-brand-900/15 bg-white px-4 py-2.5 text-sm text-ink shadow-sm outline-none transition placeholder:text-muted/60 focus:border-accent focus:ring-2 focus:ring-accent/20;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-brand-700 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand-900/20 transition hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-brand-700 bg-transparent px-5 py-2.5 text-sm font-bold text-brand-700 transition hover:bg-brand-100;
+  }
+
+  .card {
+    @apply rounded-2xl border border-brand-900/10 bg-white p-5 shadow-card;
+  }
+}

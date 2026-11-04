@@ -16,3 +16,15 @@ subprojects {
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
 }
+
+
+// Fix connectivity_plus compileSdk mismatch
+subprojects { subproject ->
+    if (subproject.name == "connectivity_plus") {
+        subproject.plugins.withId("com.android.library") {
+            subproject.android {
+                compileSdkVersion 35
+            }
+        }
+    }
+}

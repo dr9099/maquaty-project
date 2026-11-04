@@ -22,6 +22,7 @@ import { ReportsModule } from './reports/reports.module';
 import { SettingsModule } from './settings/settings.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasesModule } from './purchases/purchases.module';
+import { HealthModule } from './health/health.module';
 
 // مَقوتي — Central Backend Server
 // المرحلة 1 ✓ (قاعدة البيانات + Auth + عزل Tenant + دليل الحسابات)
@@ -50,6 +51,7 @@ import { PurchasesModule } from './purchases/purchases.module';
     SettingsModule,
     SuppliersModule,
     PurchasesModule,
+    HealthModule,
     // المراحل اللاحقة: Subscription+Admin (م6) / Backup (م7) / Broadcasts Admin (م8)
   ],
   providers: [

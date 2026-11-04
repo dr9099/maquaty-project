@@ -7,7 +7,43 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.setGlobalPrefix('v1');
-  app.enableCors();
+
+  // خلف Cloudflare / Caddy: نثق بمستوى واحد من الـ Proxy للحصول على IP الحقيقي
+  const isProduction = process.env.NODE_ENV === 'production';
+  const trustProxyRaw = process.env.TRUST_PROXY;
+  const trustProxy =
+    trustProxyRaw === undefined
+      ? isProduction
+        ? 1
+        : 0
+      : trustProxyRaw === 'true'
+        ? 1
+        : trustProxyRaw === 'false'
+          ? false
+          : Number(trustProxyRaw);
+  app.getHttpAdapter().getInstance().set('trust proxy', trustProxy);
+
+  // CORS مقيّد بنطاقات لوحة الأدمن (مطلوب في الإنتاج)
+  const corsOrigins = (process.env.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  app.enableCors({
+    origin: corsOrigins.length > 0 ? corsOrigins : !isProduction,
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Authorization',
+      'Content-Type',
+      'Accept',
+      'Origin',
+      'X-Requested-With',
+      'X-Request-Id',
+      'Idempotency-Key',
+    ],
+    maxAge: 86400,
+  });
+
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
   );

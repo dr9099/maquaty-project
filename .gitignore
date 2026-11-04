@@ -8,6 +8,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+.next/
 *.apk
 *.aab
 
@@ -34,3 +35,7 @@ npm-debug.log*
 
 # Prisma local
 backend/prisma/*.db
+
+# Deployment state
+deploy/.current_tag
+deploy/.env.production

@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend — Build & E2E
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: maqouti
+          POSTGRES_PASSWORD: maqouti
+          POSTGRES_DB: maqouti
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maqouti -d maqouti"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      DATABASE_URL: postgresql://maqouti:maqouti@127.0.0.1:5432/maqouti?schema=public
+      JWT_SECRET: ci-only-secret-not-for-production
+      JWT_ACCESS_TOKEN_TTL: 15m
+      JWT_REFRESH_TOKEN_TTL: 30d
+      MIN_SUPPORTED_APP_VERSION: 1.0.0
+      NODE_ENV: development
+      PORT: 3000
+      TRUST_PROXY: 0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Migrate
+        run: npx prisma migrate deploy
+
+      - name: Build
+        run: npm run build
+
+      - name: Run API & E2E
+        run: |
+          cat > .env <<'EOF'
+          DATABASE_URL=postgresql://maqouti:maqouti@127.0.0.1:5432/maqouti?schema=public
+          JWT_SECRET=ci-only-secret-not-for-production
+          MIN_SUPPORTED_APP_VERSION=1.0.0
+          NODE_ENV=development
+          PORT=3000
+          EOF
+          node dist/main.js > server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/v1/health >/dev/null; then ready=1; break; fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat server.log
+            exit 1
+          fi
+          npm run test:e2e
+
+  admin-portal:
+    name: Admin Portal — Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-portal
+    env:
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:3000/v1
+      NEXT_TELEMETRY_DISABLED: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-portal/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build

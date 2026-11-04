@@ -67,3 +67,4 @@ export function formatQuantityDisplay(
   const prefix = isNegative ? '-' : '';
   return cleanUnit ? `${prefix}${formattedNum} ${cleanUnit}` : `${prefix}${formattedNum}`;
 }
+

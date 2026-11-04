@@ -15,7 +15,7 @@
 
 | الملف | المحتوى |
 |---|---|
-| `docs/00-RESOLVED-DECISIONS.md` | القواعد الحاكمة المعتمدة (R-01 إلى R-35) |
+| `docs/00-RESOLVED-DECISIONS.md` | القواعد الحاكمة المعتمدة (R-01 إلى R-48) |
 | `docs/PROJECT_REQUIREMENTS.md` | فكرة النظام ونطاقه ووظائفه |
 | `docs/06-user-roles-permissions.md` | الأدوار والصلاحيات |
 | `docs/DATABASE_DESIGN.md` | تصميم قاعدة البيانات |
@@ -51,9 +51,26 @@ maqouti-project/
 ├── design/
 │   ├── Titr.ttf               ← خط التطبيق
 │   └── screens/               ← صور الشاشات + INDEX.md
-├── android/                   ← مصدر تطبيق الموبايل
-└── backend/                   ← مصدر الـ Backend
+├── android/                   ← مصدر تطبيق الموبايل (Flutter)
+├── backend/                   ← NestJS + Prisma + PostgreSQL + Dockerfile
+├── admin-portal/              ← لوحة مالك المنصة (Next.js + TS + Tailwind)
+├── website/                   ← الموقع التعريفي الثابت (معزول)
+├── deploy/                    ← Compose الإنتاج + Caddyfile + سكربتات النشر/النسخ
+├── docker-compose.yml         ← بيئة التطوير (PostgreSQL + API)
+└── .github/workflows/         ← CI + Deploy + Backup
 ```
+
+## التشغيل السريع
+```bash
+# تطوير: PostgreSQL + API
+docker compose up --build
+
+# لوحة الأدمن (تطوير)
+cd admin-portal && npm install && npm run dev
+```
+- الـ API: `http://127.0.0.1:3000/v1` — فحص الصحة: `GET /v1/health`.
+- تفاصيل النشر والنسخ الاحتياطي: `docs/20-deployment.md`.
+- متغيرات البيئة: `backend/.env.example` و`deploy/env.production.example`.
 
 ## ترتيب القراءة الموصى به
 1. `docs/00-RESOLVED-DECISIONS.md`

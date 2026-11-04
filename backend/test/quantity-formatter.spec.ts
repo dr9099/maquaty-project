@@ -80,3 +80,4 @@ describe('Quantity Formatter (تنسيق عرض كميات الوزن والأع
     });
   });
 });
+

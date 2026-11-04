@@ -1,0 +1,16 @@
+node_modules
+dist
+build
+coverage
+.env
+.env.*
+!.env.example
+.pgdata
+.e2e-tmp
+*.log
+.git
+.gitignore
+Dockerfile
+.dockerignore
+test
+**/*.spec.ts

@@ -15,7 +15,9 @@
     "db:start": "bash scripts/dev-db.sh start",
     "db:stop": "bash scripts/dev-db.sh stop",
     "db:reset": "node --env-file=.env scripts/db-reset.js",
-    "test:e2e": "node --env-file=.env scripts/e2e-all.mjs"
+    "test:e2e": "node --env-file=.env scripts/e2e-all.mjs",
+    "admin:reset-password": "node --env-file=.env scripts/admin-reset-password.mjs",
+    "worker": "node dist/worker-standby.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.0",

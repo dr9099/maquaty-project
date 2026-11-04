@@ -17,6 +17,17 @@ export class AccountStatusGuard implements CanActivate {
     if (!user || user.role === 'PLATFORM_ADMIN') return true; // مسارات عامة أو سياسات الأدمن الخاصة
     if (user.scope) return true; // توكنات محدودة الغرض (set-new-password) تُفحص في وجهتها
 
+    const deviceFingerprint = (request.headers['x-device-fingerprint'] || request.headers['x-device-id']) as string | undefined;
+    if (deviceFingerprint) {
+      const dev = await this.prisma.device.findUnique({
+        where: { deviceFingerprint },
+        select: { status: true },
+      });
+      if (dev && dev.status === 'BLOCKED') {
+        throw ApiError.forbidden('DEVICE_BLOCKED', 'هذا الجهاز محظور من استخدام النظام. تواصل مع الإدارة.');
+      }
+    }
+
     if (user.role === 'WORKER' && user.workerId) {
       const worker = await this.prisma.worker.findUnique({
         where: { id: user.workerId },

@@ -40,6 +40,8 @@ async function bootstrap() {
       'X-Requested-With',
       'X-Request-Id',
       'Idempotency-Key',
+      'X-MFA-Code',
+      'X-Device-Fingerprint',
     ],
     maxAge: 86400,
   });

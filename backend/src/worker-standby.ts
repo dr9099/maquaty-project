@@ -1,20 +1,26 @@
-// عامل احتياطي مؤقت — لا يقرأ ولا يكتب قاعدة البيانات ولا ينفّذ أي مهام.
-// يُستبدل لاحقاً بعامل الطابور الفعلي بعد اعتماد جدول jobs (قرار مستقل — R-48).
+import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { WorkerModule } from './worker/worker.module';
 
-const logger = new Logger('WorkerStandby');
+const logger = new Logger('WorkerDaemon');
 
-logger.warn(
-  'Worker في وضع الانتظار: لم يُفعّل طابور المهام بعد. العملية ستبقى حيّة دون تنفيذ أي مهمة.',
-);
+async function bootstrap() {
+  logger.log('بدء تشغيل عامل المهام في الخلفية (Background Worker)...');
+  const app = await NestFactory.createApplicationContext(WorkerModule);
+  app.enableShutdownHooks();
 
-const keepAlive = setInterval(() => undefined, 60_000);
+  const shutdown = async (signal: string) => {
+    logger.log(`استُلم ${signal} — إيقاف Worker بأمان.`);
+    await app.close();
+    process.exit(0);
+  };
 
-function shutdown(signal: string) {
-  logger.log(`استُلم ${signal} — إيقاف Worker الاحتياطي.`);
-  clearInterval(keepAlive);
-  process.exit(0);
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+bootstrap().catch((err) => {
+  logger.error('فشل بدء تشغيل Worker:', err);
+  process.exit(1);
+});

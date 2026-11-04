@@ -126,6 +126,22 @@ export class AuthService {
   // ─── تسجيل الدخول (USER_FLOWS 2 — الفحص موحّد: المالك أولاً ثم العامل) ──
 
   async login(dto: LoginDto, ip?: string) {
+    // 0) فحص حظر الجهاز مباشرة من قاعدة البيانات
+    const existingDevice = await this.prisma.device.findUnique({
+      where: { deviceFingerprint: dto.deviceFingerprint },
+    });
+    if (existingDevice && existingDevice.status === 'BLOCKED') {
+      await this.audit.log({
+        actorType: 'SYSTEM',
+        actionType: 'LOGIN_BLOCKED_DEVICE',
+        result: 'FAILURE',
+        failureReason: 'DEVICE_BLOCKED',
+        ipAddress: ip,
+        deviceInfo: dto.deviceFingerprint,
+      });
+      throw ApiError.forbidden('DEVICE_BLOCKED', 'هذا الجهاز محظور من استخدام النظام. تواصل مع الإدارة.');
+    }
+
     const owner = await this.prisma.storeOwner.findFirst({
       where: { phone: dto.phone, deletedAt: null },
     });
@@ -347,9 +363,15 @@ export class AuthService {
 
   async refresh(refreshToken: string, ip?: string) {
     const tokenHash = this.sha256(refreshToken);
-    const session = await this.prisma.refreshSession.findUnique({ where: { tokenHash } });
+    const session = await this.prisma.refreshSession.findUnique({
+      where: { tokenHash },
+      include: { device: true },
+    });
     if (!session || session.revokedAt || session.expiresAt < new Date()) {
       throw ApiError.unauthorized('INVALID_REFRESH_TOKEN', 'انتهت صلاحية الجلسة أو غير صالحة.');
+    }
+    if (session.device && session.device.status === 'BLOCKED') {
+      throw ApiError.forbidden('DEVICE_BLOCKED', 'هذا الجهاز محظور من استخدام النظام. تواصل مع الإدارة.');
     }
 
     // إبطال القديم وإنشاء جديد (دوران — منع إعادة استخدام توكن مسروق)
@@ -452,24 +474,52 @@ export class AuthService {
     if (!admin?.mfaSecret) {
       throw ApiError.badRequest('VALIDATION_ERROR', 'لم يُسجَّل مُصدِّق MFA بعد.');
     }
+
+    if (admin.mfaLockedUntil && admin.mfaLockedUntil > new Date()) {
+      throw ApiError.locked(
+        'MFA_LOCKED',
+        'تم قفل الحساب مؤقتاً بسبب تكرار محاولات MFA الخاطئة. حاول لاحقاً.',
+      );
+    }
+
     const ok = authenticator.verify({ token: dto.code, secret: admin.mfaSecret });
     if (!ok) {
+      const nextFailures = admin.failedMfaAttempts + 1;
+      const isLockedNow = nextFailures >= 5;
+      await this.prisma.platformAdmin.update({
+        where: { id: admin.id },
+        data: {
+          failedMfaAttempts: isLockedNow ? 0 : nextFailures,
+          mfaLockedUntil: isLockedNow ? new Date(Date.now() + 15 * 60 * 1000) : null,
+        },
+      });
+
       await this.audit.log({
         actorType: 'PLATFORM_ADMIN',
         actorId: admin.id,
         actionType: 'MFA_VERIFY_FAILED',
         result: 'FAILURE',
+        failureReason: isLockedNow ? 'MFA_LOCKED_MAX_ATTEMPTS' : 'INVALID_MFA_CODE',
         ipAddress: ip,
       });
+
+      if (isLockedNow) {
+        throw ApiError.locked(
+          'MFA_LOCKED',
+          'تم قفل الحساب مؤقتاً لمدة 15 دقيقة بسبب تكرار المحاولات الخاطئة (5 محاولات).',
+        );
+      }
       throw ApiError.unauthorized('INVALID_MFA_CODE', 'كود MFA غير صحيح.');
     }
 
-    if (!admin.mfaEnabled) {
-      await this.prisma.platformAdmin.update({
-        where: { id: admin.id },
-        data: { mfaEnabled: true },
-      });
-    }
+    await this.prisma.platformAdmin.update({
+      where: { id: admin.id },
+      data: {
+        failedMfaAttempts: 0,
+        mfaLockedUntil: null,
+        ...(!admin.mfaEnabled ? { mfaEnabled: true } : {}),
+      },
+    });
 
     const user: AuthenticatedUser = { userId: admin.id, role: 'PLATFORM_ADMIN' };
     const refreshToken = randomBytes(48).toString('hex');

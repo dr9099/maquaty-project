@@ -23,6 +23,7 @@ import { SettingsModule } from './settings/settings.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { HealthModule } from './health/health.module';
+import { AdminModule } from './admin/admin.module';
 
 // مَقوتي — Central Backend Server
 // المرحلة 1 ✓ (قاعدة البيانات + Auth + عزل Tenant + دليل الحسابات)
@@ -30,6 +31,7 @@ import { HealthModule } from './health/health.module';
 // المرحلة 3 ✓ (العمال والصلاحيات + المسؤول + الموافقات R-33 + RBAC خادمي كامل)
 // المرحلة 4 ✓ (الآجل + المصروفات + التالف + المطابقة والإغلاق اليومي)
 // المرحلة 5 ✓ (المزامنة Sync Engine + العمليات المرفوضة + لوحة الملخص + الأموال والتقارير)
+// المرحلة 6 ✓ (إدارة المنصة والاشتراكات Admin + Worker)
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -52,7 +54,7 @@ import { HealthModule } from './health/health.module';
     SuppliersModule,
     PurchasesModule,
     HealthModule,
-    // المراحل اللاحقة: Subscription+Admin (م6) / Backup (م7) / Broadcasts Admin (م8)
+    AdminModule,
   ],
   providers: [
     // الترتيب ملزم: المصادقة أولاً ثم فحص حالة الحساب عند كل طلب (12-business §3)

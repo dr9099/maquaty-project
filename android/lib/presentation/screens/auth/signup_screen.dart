@@ -12,7 +12,7 @@ class SignupScreen extends StatefulWidget {
 }
 
 class _SignupScreenState extends State<SignupScreen> {
-  final _nameController = TextEditingController();
+  final _fullNameController = TextEditingController();
   final _storeNameController = TextEditingController();
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -21,7 +21,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
   @override
   void dispose() {
-    _nameController.dispose();
+    _fullNameController.dispose();
     _storeNameController.dispose();
     _phoneController.dispose();
     _passwordController.dispose();
@@ -30,20 +30,27 @@ class _SignupScreenState extends State<SignupScreen> {
   }
 
   void _handleSignup() async {
-    final name = _nameController.text.trim();
+    final fullName = _fullNameController.text.trim();
     final storeName = _storeNameController.text.trim();
     final phone = _phoneController.text.trim();
     final password = _passwordController.text;
-    final confirm = _confirmPasswordController.text;
+    final passwordConfirmation = _confirmPasswordController.text;
 
-    if (name.isEmpty || storeName.isEmpty || phone.isEmpty || password.isEmpty) {
+    if (fullName.isEmpty || storeName.isEmpty || phone.isEmpty || password.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('يرجى ملء جميع الحقول المطلوبة')),
       );
       return;
     }
 
-    if (password != confirm) {
+    if (password.length < 8) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('كلمة المرور يجب ألا تقل عن 8 خانات (R-34)')),
+      );
+      return;
+    }
+
+    if (password != passwordConfirmation) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('كلمة المرور وتأكيدها غير متطابقين')),
       );
@@ -52,11 +59,11 @@ class _SignupScreenState extends State<SignupScreen> {
 
     final auth = context.read<AuthProvider>();
     final success = await auth.registerOwner(
-      fullName: name,
+      fullName: fullName,
       storeName: storeName,
       phone: phone,
       password: password,
-      passwordConfirmation: confirm,
+      passwordConfirmation: passwordConfirmation,
     );
 
     if (success && mounted) {
@@ -130,7 +137,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
                   // الاسم الكامل
                   TextFormField(
-                    controller: _nameController,
+                    controller: _fullNameController,
                     decoration: const InputDecoration(
                       labelText: 'الاسم الكامل للمالك',
                       prefixIcon: Icon(Icons.person_outline, color: AppColors.textSecondary),

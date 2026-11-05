@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dio/dio.dart';
 import '../constants/api_endpoints.dart';
+import '../services/device_info_service.dart';
 import '../storage/secure_storage_service.dart';
 
 /// استثناء خاص بأخطاء خادم مَقوتي
@@ -55,8 +56,9 @@ class ApiClient {
         if (activeAccount != null && activeAccount.accessToken.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer ${activeAccount.accessToken}';
         }
-        // بصمة الجهاز المعتمدة
-        options.headers['X-Device-Fingerprint'] = 'APP-DEVICE-DEFAULT';
+        // بصمة الجهاز المعتمدة (R-25)
+        final fingerprint = await DeviceInfoService.getDeviceFingerprint();
+        options.headers['X-Device-Fingerprint'] = fingerprint;
         return handler.next(options);
       },
       onError: (DioException error, handler) async {

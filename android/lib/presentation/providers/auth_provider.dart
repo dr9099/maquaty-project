@@ -117,10 +117,12 @@ class AuthProvider with ChangeNotifier {
   }
 
   Future<bool> registerOwner({
-    required String name,
+    required String fullName,
     required String storeName,
     required String phone,
     required String password,
+    required String passwordConfirmation,
+    String? deviceFingerprint,
   }) async {
     _isLoading = true;
     _errorMessage = null;
@@ -128,10 +130,12 @@ class AuthProvider with ChangeNotifier {
 
     try {
       final account = await _repo.registerOwner(
-        name: name,
+        fullName: fullName,
         storeName: storeName,
         phone: phone,
         password: password,
+        passwordConfirmation: passwordConfirmation,
+        deviceFingerprint: deviceFingerprint,
       );
       _currentAccount = account;
       _accounts = await _repo.getAllAccounts();

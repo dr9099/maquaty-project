@@ -1,5 +1,6 @@
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
+import '../../core/services/device_info_service.dart';
 import '../../core/storage/secure_storage_service.dart';
 import '../models/auth_account.dart';
 
@@ -12,12 +13,16 @@ class AuthRepository {
   Future<AuthAccount> login({
     required String phone,
     required String password,
+    String? deviceFingerprint,
   }) async {
+    final fingerprint =
+        deviceFingerprint ?? await DeviceInfoService.getDeviceFingerprint();
     final res = await _api.post(
       ApiEndpoints.login,
       data: {
         'phone': phone,
         'password': password,
+        'deviceFingerprint': fingerprint,
       },
     );
 
@@ -48,29 +53,40 @@ class AuthRepository {
   }
 
   Future<AuthAccount> registerOwner({
-    required String name,
+    required String fullName,
     required String storeName,
     required String phone,
     required String password,
+    required String passwordConfirmation,
+    String? deviceFingerprint,
   }) async {
+    final fingerprint =
+        deviceFingerprint ?? await DeviceInfoService.getDeviceFingerprint();
     final res = await _api.post(
       ApiEndpoints.registerOwner,
       data: {
-        'name': name,
+        'fullName': fullName,
         'storeName': storeName,
         'phone': phone,
         'password': password,
+        'passwordConfirmation': passwordConfirmation,
+        'deviceFingerprint': fingerprint,
       },
     );
 
     final data = res.data;
     final user = data['user'] ?? {};
+    final accountData = data['account'] ?? {};
 
     final account = AuthAccount(
-      id: (user['storeOwnerId'] ?? user['id'] ?? data['store_owner_id'] ?? '')
+      id: (user['storeOwnerId'] ??
+              user['id'] ??
+              accountData['id'] ??
+              data['store_owner_id'] ??
+              '')
           .toString(),
       phone: phone,
-      displayName: name,
+      displayName: fullName,
       storeName: storeName,
       role: 'STORE_OWNER',
       isResponsibleWorker: false,

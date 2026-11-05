@@ -52,10 +52,11 @@ class _SignupScreenState extends State<SignupScreen> {
 
     final auth = context.read<AuthProvider>();
     final success = await auth.registerOwner(
-      name: name,
+      fullName: name,
       storeName: storeName,
       phone: phone,
       password: password,
+      passwordConfirmation: confirm,
     );
 
     if (success && mounted) {

@@ -173,7 +173,11 @@ test('1. UploadsController: رفع ملف متعدد الأجزاء واسترج
 
   const testFilename = `test-${Date.now()}.jpg`;
   const testFilePath = path.join(uploadDir, testFilename);
-  fs.writeFileSync(testFilePath, Buffer.from('FAKE_IMAGE_CONTENT_PHASE7'));
+  // JPEG magic bytes (FF D8 FF E0) + payload (25 bytes total)
+  fs.writeFileSync(
+    testFilePath,
+    Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from('FAKE_IMAGE_CONTENT_P7')]),
+  );
 
   const fakeUploadedFile = {
     fieldname: 'file',

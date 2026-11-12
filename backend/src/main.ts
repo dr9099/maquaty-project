@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import { Prisma } from '@prisma/client';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { securityHeadersMiddleware } from './common/security-headers.middleware';
 
 // 1. تحويل BigInt (لـ lastSyncVersion و sizeBytes) إلى Number تلقائياً عند التسلسل لـ JSON
 (BigInt.prototype as any).toJSON = function () {
@@ -19,6 +20,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.setGlobalPrefix('v1');
+  app.use(securityHeadersMiddleware);
 
   // خلف Cloudflare / Caddy: نثق بقفزتين في الإنتاج للحصول على IP الحقيقي (Cloudflare + Caddy)
   const isProduction = process.env.NODE_ENV === 'production';

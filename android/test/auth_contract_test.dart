@@ -147,6 +147,34 @@ void main() {
       await authProvider.updateAccountStatus('EXPIRED');
       expect(authProvider.status, equals(AuthStatus.accountLocked));
     });
+
+    test('6. Phase 9 — SecureStorageService لا يكتب التوكنات أبداً بنص صريح في SharedPreferences', () async {
+      final storage = SecureStorageService();
+      await storage.clearAll();
+
+      final account = AuthAccount(
+        id: 'owner-sec-test',
+        phone: '777555666',
+        displayName: 'مالك الأمان',
+        storeName: 'متجر مَقوتي',
+        role: 'STORE_OWNER',
+        accountStatus: 'ACTIVE',
+        accessToken: 'super-secret-jwt-access-token',
+        refreshToken: 'super-secret-refresh-token',
+        lastActiveAt: DateTime.now(),
+      );
+
+      await storage.saveAccount(account, setActive: true);
+
+      final loaded = await storage.getActiveAccount();
+      expect(loaded, isNotNull);
+      expect(loaded!.accessToken, equals('super-secret-jwt-access-token'));
+      expect(loaded.refreshToken, equals('super-secret-refresh-token'));
+
+      final sp = await SharedPreferences.getInstance();
+      expect(sp.getString('muqawati_accounts'), isNull);
+      expect(sp.getString('muqawati_active_account_id'), isNull);
+    });
   });
 }
 

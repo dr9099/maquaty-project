@@ -29,10 +29,35 @@ interface CachedWorker {
 @Injectable()
 export class AccountStatusGuard implements CanActivate {
   private static readonly TTL_MS = 30_000;
+  private static readonly MAX_CACHE_SIZE = 5_000;
   private static readonly deviceCache = new Map<string, CachedDevice>();
   private static readonly ownerCache = new Map<string, CachedOwner>();
   private static readonly workerCache = new Map<string, CachedWorker>();
   private static readonly messageCache = new Map<string, { text: string; cachedAt: number }>();
+
+  private static setBounded<T extends { cachedAt: number }>(
+    cache: Map<string, T>,
+    key: string,
+    value: T,
+    now: number,
+  ): void {
+    if (cache.has(key)) {
+      cache.delete(key);
+    }
+    if (cache.size >= AccountStatusGuard.MAX_CACHE_SIZE) {
+      for (const [k, entry] of cache) {
+        if (now - entry.cachedAt >= AccountStatusGuard.TTL_MS) {
+          cache.delete(k);
+        }
+      }
+      while (cache.size >= AccountStatusGuard.MAX_CACHE_SIZE) {
+        const oldestKey = cache.keys().next().value;
+        if (oldestKey === undefined) break;
+        cache.delete(oldestKey);
+      }
+    }
+    cache.set(key, value);
+  }
 
   static invalidateDevice(fingerprint?: string): void {
     if (!fingerprint || !fingerprint.trim()) {
@@ -98,7 +123,12 @@ export class AccountStatusGuard implements CanActivate {
         throw ApiError.forbidden('DEVICE_BLOCKED', 'هذا الجهاز غير مسجل أو محظور من استخدام النظام. تواصل مع الإدارة.');
       }
       devStatus = dev.status;
-      AccountStatusGuard.deviceCache.set(fingerprint, { status: dev.status, cachedAt: now });
+      AccountStatusGuard.setBounded(
+        AccountStatusGuard.deviceCache,
+        fingerprint,
+        { status: dev.status, cachedAt: now },
+        now,
+      );
     }
 
     if (devStatus === 'BLOCKED') {
@@ -127,10 +157,12 @@ export class AccountStatusGuard implements CanActivate {
           isResponsible: workerDb.isResponsible,
           storeOwnerId: workerDb.storeOwnerId,
         };
-        AccountStatusGuard.workerCache.set(user.workerId, {
-          ...worker,
-          cachedAt: now,
-        });
+        AccountStatusGuard.setBounded(
+          AccountStatusGuard.workerCache,
+          user.workerId,
+          { ...worker, cachedAt: now },
+          now,
+        );
       }
 
       if (worker.status === 'DELETED') {
@@ -152,10 +184,12 @@ export class AccountStatusGuard implements CanActivate {
             status: ownerDb.status,
             allowResponsiblePurchases: ownerDb.allowResponsiblePurchases,
           };
-          AccountStatusGuard.ownerCache.set(worker.storeOwnerId, {
-            ...owner,
-            cachedAt: now,
-          });
+          AccountStatusGuard.setBounded(
+            AccountStatusGuard.ownerCache,
+            worker.storeOwnerId,
+            { ...owner, cachedAt: now },
+            now,
+          );
         }
       }
 
@@ -201,10 +235,12 @@ export class AccountStatusGuard implements CanActivate {
           status: ownerDb.status,
           allowResponsiblePurchases: ownerDb.allowResponsiblePurchases,
         };
-        AccountStatusGuard.ownerCache.set(storeOwnerId, {
-          ...owner,
-          cachedAt: now,
-        });
+        AccountStatusGuard.setBounded(
+          AccountStatusGuard.ownerCache,
+          storeOwnerId,
+          { ...owner, cachedAt: now },
+          now,
+        );
       }
     }
 
@@ -268,7 +304,12 @@ export class AccountStatusGuard implements CanActivate {
           if (typeof val === 'string' && val.trim() !== '') {
             text = val.trim();
           }
-          AccountStatusGuard.messageCache.set(key, { text, cachedAt: now });
+          AccountStatusGuard.setBounded(
+            AccountStatusGuard.messageCache,
+            key,
+            { text, cachedAt: now },
+            now,
+          );
         } catch {}
       }
     }

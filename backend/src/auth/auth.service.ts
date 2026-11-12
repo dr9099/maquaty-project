@@ -495,14 +495,17 @@ export class AuthService {
       throw ApiError.forbidden('DEVICE_BLOCKED', 'هذا الجهاز محظور من استخدام النظام. تواصل مع الإدارة.');
     }
 
-    // إبطال القديم وإنشاء جديد (دوران — منع إعادة استخدام توكن مسروق)
+    // إبطال القديم ذرّياً وإنشاء جديد (دوران — منع إعادة استخدام توكن مسروق حتى عند التزامن)
     const newRefreshToken = randomBytes(48).toString('hex');
-    await this.prisma.$transaction([
-      this.prisma.refreshSession.update({
-        where: { id: session.id },
+    await this.prisma.$transaction(async (tx) => {
+      const revoked = await tx.refreshSession.updateMany({
+        where: { id: session.id, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-      this.prisma.refreshSession.create({
+      });
+      if (revoked.count === 0) {
+        throw ApiError.unauthorized('INVALID_REFRESH_TOKEN', 'انتهت صلاحية الجلسة أو غير صالحة.');
+      }
+      await tx.refreshSession.create({
         data: {
           userType: session.userType,
           userId: session.userId,
@@ -510,8 +513,8 @@ export class AuthService {
           tokenHash: this.sha256(newRefreshToken),
           expiresAt: this.refreshExpiry(session.userType),
         },
-      }),
-    ]);
+      });
+    });
 
     const user = await this.loadUserForTokens(session.userType, session.userId);
     const accessToken = await this.jwt.signAsync(this.tokenPayload(user), {

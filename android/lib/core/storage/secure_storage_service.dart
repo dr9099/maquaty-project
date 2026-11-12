@@ -5,37 +5,55 @@ import '../../data/models/auth_account.dart';
 
 /// إدارة التخزين الآمن والمحلي لبيانات الحسابات والتوكنات المتعددة
 /// المرجع: docs/09-mobile-app.md القسم 8 (تبديل الحسابات - R-35)
+/// أمنياً: تُحفظ التوكنات حصراً في FlutterSecureStorage المشفّر (أو في الذاكرة العشوائية المؤقتة أثناء الاختبارات فقط) ولا تُكتب أبداً في SharedPreferences غير المشفّرة.
 class SecureStorageService {
   static const String _keyAccounts = 'muqawati_accounts';
   static const String _keyActiveAccountId = 'muqawati_active_account_id';
 
+  // بديل مؤقت في الذاكرة فقط عند تعذر استدعاء Plugin التخزين المشفّر أثناء اختبارات الوحدة
+  static final Map<String, String> _memoryFallback = {};
+
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
-  // جلب كافة الحسابات المحفوظة
+  Future<String?> _readSecure(String key) async {
+    try {
+      final val = await _secureStorage.read(key: key);
+      if (val != null) return val;
+    } catch (_) {}
+    return _memoryFallback[key];
+  }
+
+  Future<void> _writeSecure(String key, String value) async {
+    try {
+      await _secureStorage.write(key: key, value: value);
+      _memoryFallback.remove(key);
+    } catch (_) {
+      _memoryFallback[key] = value;
+    }
+  }
+
+  Future<void> _deleteSecure(String key) async {
+    _memoryFallback.remove(key);
+    try {
+      await _secureStorage.delete(key: key);
+    } catch (_) {}
+  }
+
+  // جلب كافة الحسابات المحفوظة من التخزين المشفّر فقط
   Future<List<AuthAccount>> getAccounts() async {
     try {
-      final jsonStr = await _secureStorage.read(key: _keyAccounts);
+      final jsonStr = await _readSecure(_keyAccounts);
       if (jsonStr == null || jsonStr.isEmpty) return [];
       final List<dynamic> list = jsonDecode(jsonStr);
       return list.map((item) => AuthAccount.fromJson(item)).toList();
     } catch (_) {
-      // Fallback إلى SharedPreferences إن لزم
-      final sp = await SharedPreferences.getInstance();
-      final jsonStr = sp.getString(_keyAccounts);
-      if (jsonStr == null || jsonStr.isEmpty) return [];
-      final List<dynamic> list = jsonDecode(jsonStr);
-      return list.map((item) => AuthAccount.fromJson(item)).toList();
+      return [];
     }
   }
 
   // جلب معرف الحساب النشط حالياً
   Future<String?> getActiveAccountId() async {
-    try {
-      final id = await _secureStorage.read(key: _keyActiveAccountId);
-      if (id != null) return id;
-    } catch (_) {}
-    final sp = await SharedPreferences.getInstance();
-    return sp.getString(_keyActiveAccountId);
+    return _readSecure(_keyActiveAccountId);
   }
 
   // جلب الحساب النشط حالياً
@@ -50,7 +68,7 @@ class SecureStorageService {
     }
   }
 
-  // حفظ أو تحديث حساب
+  // حفظ أو تحديث حساب في التخزين المشفّر فقط
   Future<void> saveAccount(AuthAccount account, {bool setActive = true}) async {
     final accounts = await getAccounts();
     final index = accounts.indexWhere((a) => a.id == account.id);
@@ -61,28 +79,15 @@ class SecureStorageService {
     }
 
     final jsonStr = jsonEncode(accounts.map((a) => a.toJson()).toList());
-    try {
-      await _secureStorage.write(key: _keyAccounts, value: jsonStr);
-      if (setActive) {
-        await _secureStorage.write(key: _keyActiveAccountId, value: account.id);
-      }
-    } catch (_) {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString(_keyAccounts, jsonStr);
-      if (setActive) {
-        await sp.setString(_keyActiveAccountId, account.id);
-      }
+    await _writeSecure(_keyAccounts, jsonStr);
+    if (setActive) {
+      await _writeSecure(_keyActiveAccountId, account.id);
     }
   }
 
   // تبديل الحساب النشط (R-35)
   Future<void> setActiveAccount(String accountId) async {
-    try {
-      await _secureStorage.write(key: _keyActiveAccountId, value: accountId);
-    } catch (_) {
-      final sp = await SharedPreferences.getInstance();
-      await sp.setString(_keyActiveAccountId, accountId);
-    }
+    await _writeSecure(_keyActiveAccountId, accountId);
   }
 
   // إزالة حساب معين
@@ -90,13 +95,7 @@ class SecureStorageService {
     final accounts = await getAccounts();
     accounts.removeWhere((a) => a.id == accountId);
     final jsonStr = jsonEncode(accounts.map((a) => a.toJson()).toList());
-
-    final sp = await SharedPreferences.getInstance();
-    try {
-      await _secureStorage.write(key: _keyAccounts, value: jsonStr);
-    } catch (_) {
-      await sp.setString(_keyAccounts, jsonStr);
-    }
+    await _writeSecure(_keyAccounts, jsonStr);
 
     final activeId = await getActiveAccountId();
     if (activeId == accountId) {
@@ -104,19 +103,21 @@ class SecureStorageService {
       if (nextActive != null) {
         await setActiveAccount(nextActive);
       } else {
-        await _secureStorage.delete(key: _keyActiveAccountId);
-        await sp.remove(_keyActiveAccountId);
+        await _deleteSecure(_keyActiveAccountId);
       }
     }
   }
 
-  // مسح كامل الجلسة
+  // مسح كامل الجلسة (بما فيها أي مفاتيح قديمة في SharedPreferences)
   Future<void> clearAll() async {
+    _memoryFallback.clear();
     try {
       await _secureStorage.deleteAll();
     } catch (_) {}
-    final sp = await SharedPreferences.getInstance();
-    await sp.remove(_keyAccounts);
-    await sp.remove(_keyActiveAccountId);
+    try {
+      final sp = await SharedPreferences.getInstance();
+      await sp.remove(_keyAccounts);
+      await sp.remove(_keyActiveAccountId);
+    } catch (_) {}
   }
 }

@@ -58,9 +58,9 @@ android {
         release {
             signingConfig = signingConfigs.debug
             // R8 code & resource shrinking (uses proguard-rules.pro):
-            // minifyEnabled true
-            // shrinkResources true
-            // proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 

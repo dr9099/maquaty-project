@@ -49,6 +49,7 @@ export type ApiErrorCode =
   | 'CURRENCY_CHANGE_LOCKED'
   | 'FRACTIONAL_QUANTITY_NOT_ALLOWED'
   | 'FRACTIONAL_GRAMS_NOT_ALLOWED'
+  | 'TOO_MANY_REQUESTS'
   | 'INTERNAL_ERROR';
 
 export class ApiError extends Error {
@@ -79,6 +80,12 @@ export class ApiError extends Error {
   static locked(reason: string, message: string, details?: Record<string, unknown>) {
     // كود 423 ACCOUNT_LOCKED الموحّد مع reason يوجّه التطبيق لشاشة 21 أو 24
     return new ApiError(423, 'ACCOUNT_LOCKED', message, { reason, ...details });
+  }
+  static tooManyRequests(
+    message = 'تم تجاوز الحد المسموح من المحاولات، يرجى الانتظار دقيقة والمحاولة مجدداً.',
+    details?: Record<string, unknown>,
+  ) {
+    return new ApiError(429, 'TOO_MANY_REQUESTS', message, details);
   }
   static internal(message = 'حدث خطأ غير متوقع، حاول لاحقاً.') {
     return new ApiError(500, 'INTERNAL_ERROR', message);

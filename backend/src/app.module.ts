@@ -1,9 +1,11 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ApiExceptionFilter } from './common/api-exception.filter';
 import { JwtAuthGuard } from './common/jwt-auth.guard';
 import { AccountStatusGuard } from './common/account-status.guard';
+import { RateLimitGuard } from './common/rate-limit.guard';
+import { SecurityHeadersMiddleware } from './common/security-headers.middleware';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuditModule } from './audit/audit.module';
 import { AccountingModule } from './accounting/accounting.module';
@@ -59,10 +61,16 @@ import { UploadsModule } from './uploads/uploads.module';
     UploadsModule,
   ],
   providers: [
-    // الترتيب ملزم: المصادقة أولاً ثم فحص حالة الحساب عند كل طلب (12-business §3)
+    // الترتيب ملزم: المصادقة أولاً، ثم محدد المعدل، ثم فحص حالة الحساب عند كل طلب (12-business §3)
+    RateLimitGuard,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
+    { provide: APP_GUARD, useExisting: RateLimitGuard },
     { provide: APP_GUARD, useClass: AccountStatusGuard },
     { provide: APP_FILTER, useClass: ApiExceptionFilter },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(SecurityHeadersMiddleware).forRoutes('{*path}');
+  }
+}

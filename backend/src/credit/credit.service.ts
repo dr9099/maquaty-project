@@ -38,21 +38,21 @@ export class CreditService {
       orderBy: { name: 'asc' },
     });
 
-    const results = await Promise.all(
-      customers.map(async (c) => {
-        const totalDebt = await this.calculateCustomerDebt(c.id);
-        return {
-          id: c.id,
-          name: c.name,
-          phone: c.phone,
-          credit_limit: c.creditLimit ? Number(c.creditLimit) : null,
-          total_debt: totalDebt,
-          created_at: c.createdAt,
-        };
-      }),
+    if (customers.length === 0) return [];
+
+    const debtMap = await this.calculateCustomerDebtsMap(
+      storeOwnerId,
+      customers.map((c) => c.id),
     );
 
-    return results;
+    return customers.map((c) => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      credit_limit: c.creditLimit ? Number(c.creditLimit) : null,
+      total_debt: debtMap.get(c.id) ?? 0,
+      created_at: c.createdAt,
+    }));
   }
 
   async create(user: AuthenticatedUser, dto: CreateCreditCustomerDto, ip?: string) {
@@ -419,6 +419,73 @@ export class CreditService {
       },
       transactions: ledger,
     };
+  }
+
+  private async calculateCustomerDebtsMap(
+    storeOwnerId: string,
+    customerIds: string[],
+  ): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    if (customerIds.length === 0) return result;
+
+    const [salesGroups, paymentGroups, creditReturns] = await Promise.all([
+      this.prisma.sale.groupBy({
+        by: ['creditCustomerId'],
+        where: {
+          storeOwnerId,
+          creditCustomerId: { in: customerIds },
+          paymentType: 'CREDIT',
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.creditPayment.groupBy({
+        by: ['creditCustomerId'],
+        where: {
+          storeOwnerId,
+          creditCustomerId: { in: customerIds },
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.return.findMany({
+        where: {
+          storeOwnerId,
+          sale: { creditCustomerId: { in: customerIds }, paymentType: 'CREDIT' },
+        },
+        select: {
+          amount: true,
+          sale: { select: { creditCustomerId: true } },
+        },
+      }),
+    ]);
+
+    const salesMap = new Map<string, number>();
+    for (const g of salesGroups) {
+      if (g.creditCustomerId) {
+        salesMap.set(g.creditCustomerId, Number(g._sum.amount ?? 0));
+      }
+    }
+
+    const paymentsMap = new Map<string, number>();
+    for (const g of paymentGroups) {
+      paymentsMap.set(g.creditCustomerId, Number(g._sum.amount ?? 0));
+    }
+
+    const returnsMap = new Map<string, number>();
+    for (const r of creditReturns) {
+      const cid = r.sale.creditCustomerId;
+      if (cid) {
+        returnsMap.set(cid, (returnsMap.get(cid) ?? 0) + Number(r.amount ?? 0));
+      }
+    }
+
+    for (const id of customerIds) {
+      const salesTotal = salesMap.get(id) ?? 0;
+      const paymentsTotal = paymentsMap.get(id) ?? 0;
+      const returnsTotal = returnsMap.get(id) ?? 0;
+      result.set(id, round2(salesTotal - paymentsTotal - returnsTotal));
+    }
+
+    return result;
   }
 
   private async calculateCustomerDebt(customerId: string): Promise<number> {

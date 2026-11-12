@@ -146,6 +146,14 @@ export class SyncService {
           ...(op.payload ?? {}),
           clientOpId: op.clientOpId,
         };
+        // حماية حصة التجربة وعزل المستأجر: لا يُسمح للعميل بتمرير حقول تحكم خادميّة داخل payload المزامنة
+        delete payloadWithClientOp.trialSalesLimit;
+        delete payloadWithClientOp.trialSalesUsed;
+        delete payloadWithClientOp.trial_sales_limit;
+        delete payloadWithClientOp.trial_sales_used;
+        delete payloadWithClientOp.storeOwnerId;
+        delete payloadWithClientOp.store_owner_id;
+        delete payloadWithClientOp.status;
         if (op.opType === 'SALE') {
           await this.sales.create(user, payloadWithClientOp as any);
         } else if (op.opType === 'CREDIT_PAYMENT') {

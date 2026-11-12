@@ -398,8 +398,19 @@ export class SalesService {
       >(Prisma.sql`SELECT trial_sales_used, trial_sales_limit, status FROM store_owners
                    WHERE id = ${storeOwnerId}::uuid FOR UPDATE`);
       const owner = lockedOwners[0];
-      if (owner.status === 'TRIAL_EXPIRED' || owner.status === 'EXPIRED' || owner.status === 'SUSPENDED') {
-        const reason = owner.status === 'TRIAL_EXPIRED' ? 'TRIAL_EXPIRED' : owner.status === 'EXPIRED' ? 'SUBSCRIPTION_EXPIRED' : 'ACCOUNT_SUSPENDED';
+      if (
+        owner.status === 'TRIAL_EXPIRED' ||
+        owner.status === 'EXPIRED' ||
+        owner.status === 'SUSPENDED' ||
+        ((owner.status === 'TRIAL' || owner.status === 'TRIAL_WARNING') &&
+          owner.trial_sales_used >= owner.trial_sales_limit)
+      ) {
+        const reason =
+          owner.status === 'EXPIRED'
+            ? 'SUBSCRIPTION_EXPIRED'
+            : owner.status === 'SUSPENDED'
+              ? 'ACCOUNT_SUSPENDED'
+              : 'TRIAL_EXPIRED';
         const { phone, whatsapp } = await this.getSupportContacts();
         throw ApiError.locked(reason, `الحساب موقوف أو انتهت الفترة التجريبية. للتواصل والدعم: ${phone}`, {
           contact_phone: phone,

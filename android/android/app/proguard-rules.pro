@@ -15,10 +15,11 @@
 -keep class com.kareemtech.maquaty.** { *; }
 -dontwarn com.kareemtech.maquaty.**
 
-# 3. Preserve JNI native method signatures
+# 3. Preserve JNI native method signatures & MethodChannel
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+-keep class io.flutter.plugin.common.** { *; }
 
 # 4. Preserve Flutter plugin registration & reflection
 -keep class * implements io.flutter.plugin.common.PluginRegistry$PluginRegistrantCallback { *; }

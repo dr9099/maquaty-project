@@ -722,66 +722,70 @@ export class ReportsService {
     const limit = Math.min(Math.max(dto.limit ?? 50, 1), 100);
     const offset = Math.max(dto.offset ?? 0, 0);
 
-    const owner = await this.prisma.storeOwner.findUniqueOrThrow({
-      where: { id: storeOwnerId },
-      select: { currency: true },
-    });
-
-    const suppliers = await this.prisma.supplier.findMany({
-      where: { storeOwnerId, deletedAt: null },
-      orderBy: { name: 'asc' },
-    });
-
-    const rows = await Promise.all(
-      suppliers.map(async (s) => {
-        const [invAgg, payAgg, retAgg] = await Promise.all([
-          this.prisma.purchaseInvoice.aggregate({
-            where: {
-              storeOwnerId,
-              supplierId: s.id,
-              status: 'POSTED',
-              invoiceDate: { gte: start, lte: end },
-            },
-            _count: { id: true },
-            _sum: { totalAmount: true, paidAmount: true },
-          }),
-          this.prisma.supplierPayment.aggregate({
-            where: {
-              storeOwnerId,
-              supplierId: s.id,
-              paidAt: { gte: start, lte: end },
-            },
-            _sum: { amount: true },
-          }),
-          this.prisma.purchaseReturn.aggregate({
-            where: {
-              storeOwnerId,
-              supplierId: s.id,
-              returnedAt: { gte: start, lte: end },
-            },
-            _sum: { totalAmount: true },
-          }),
-        ]);
-
-        const purchased = Number((invAgg._sum.totalAmount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
-        const paidOnInv = Number((invAgg._sum.paidAmount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
-        const payments = Number((payAgg._sum.amount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
-        const returned = Number((retAgg._sum.totalAmount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
-
-        return {
-          supplier_id: s.id,
-          supplier_name: s.name,
-          phone: s.phone,
-          status: s.status,
-          invoices_count: invAgg._count.id,
-          total_purchased: purchased,
-          total_returned: returned,
-          net_purchased: round2(purchased - returned),
-          total_paid: round2(paidOnInv + payments),
-          current_balance: Number(s.currentBalance),
-        };
+    const [owner, suppliers, invoiceGroups, paymentGroups, returnGroups] = await Promise.all([
+      this.prisma.storeOwner.findUniqueOrThrow({
+        where: { id: storeOwnerId },
+        select: { currency: true },
       }),
-    );
+      this.prisma.supplier.findMany({
+        where: { storeOwnerId, deletedAt: null },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.purchaseInvoice.groupBy({
+        by: ['supplierId'],
+        where: {
+          storeOwnerId,
+          status: 'POSTED',
+          invoiceDate: { gte: start, lte: end },
+        },
+        _count: { id: true },
+        _sum: { totalAmount: true, paidAmount: true },
+      }),
+      this.prisma.supplierPayment.groupBy({
+        by: ['supplierId'],
+        where: {
+          storeOwnerId,
+          paidAt: { gte: start, lte: end },
+        },
+        _sum: { amount: true },
+      }),
+      this.prisma.purchaseReturn.groupBy({
+        by: ['supplierId'],
+        where: {
+          storeOwnerId,
+          returnedAt: { gte: start, lte: end },
+        },
+        _sum: { totalAmount: true },
+      }),
+    ]);
+
+    const invoiceMap = new Map(invoiceGroups.map((g) => [g.supplierId, g]));
+    const paymentMap = new Map(paymentGroups.map((g) => [g.supplierId, g]));
+    const returnMap = new Map(returnGroups.map((g) => [g.supplierId, g]));
+
+    const rows = suppliers.map((s) => {
+      const invAgg = invoiceMap.get(s.id);
+      const payAgg = paymentMap.get(s.id);
+      const retAgg = returnMap.get(s.id);
+
+      const purchased = Number((invAgg?._sum.totalAmount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
+      const paidOnInv = Number((invAgg?._sum.paidAmount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
+      const payments = Number((payAgg?._sum.amount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
+      const returned = Number((retAgg?._sum.totalAmount ?? new Prisma.Decimal(0)).toDecimalPlaces(2));
+
+      return {
+        supplier_id: s.id,
+        supplier_name: s.name,
+        phone: s.phone,
+        status: s.status,
+        invoices_count: invAgg?._count.id ?? 0,
+        total_purchased: purchased,
+        total_returned: returned,
+        net_purchased: round2(purchased - returned),
+        total_paid: round2(paidOnInv + payments),
+        current_balance: Number(s.currentBalance),
+      };
+    });
 
     rows.sort((a, b) => b.net_purchased - a.net_purchased);
     const totalPurchased = round2(rows.reduce((s, r) => s + r.net_purchased, 0));
@@ -908,6 +912,12 @@ export class ReportsService {
 
     const now = startOfDay(new Date());
     const globalBuckets = { days_0_30: 0, days_31_60: 0, days_61_90: 0, days_90_plus: 0 };
+    const invoicesBySupplier = new Map<string, typeof openInvoices>();
+    for (const inv of openInvoices) {
+      const list = invoicesBySupplier.get(inv.supplierId);
+      if (list) list.push(inv);
+      else invoicesBySupplier.set(inv.supplierId, [inv]);
+    }
 
     const records = suppliers.map((s) => {
       const buckets = { days_0_30: 0, days_31_60: 0, days_61_90: 0, days_90_plus: 0 };
@@ -917,7 +927,7 @@ export class ReportsService {
         putInBucket(buckets, age, openingRem);
       }
 
-      for (const inv of openInvoices.filter((i) => i.supplierId === s.id)) {
+      for (const inv of invoicesBySupplier.get(s.id) ?? []) {
         const rem = Number(inv.remainingAmount);
         const age = Math.max(0, Math.floor((now.getTime() - startOfDay(inv.invoiceDate).getTime()) / 86_400_000));
         putInBucket(buckets, age, rem);

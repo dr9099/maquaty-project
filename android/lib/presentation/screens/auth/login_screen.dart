@@ -38,12 +38,21 @@ class _LoginScreenState extends State<LoginScreen> {
     final auth = context.read<AuthProvider>();
     final success = await auth.login(phone, password);
 
-    if (success && mounted) {
+    if (!mounted) return;
+    if (success) {
       Navigator.pushReplacementNamed(context, '/home');
-    } else if (mounted) {
+    } else if (auth.status == AuthStatus.mustChangePassword) {
+      Navigator.pushReplacementNamed(context, '/set-new-password');
+    } else if (auth.status == AuthStatus.accountLocked) {
+      Navigator.pushReplacementNamed(context, '/account-locked');
+    } else {
       if (auth.errorMessage?.contains('SUSPENDED') == true ||
           auth.errorMessage?.contains('موقوف') == true) {
         setState(() => _isSuspended = true);
+      } else if (auth.errorMessage != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(auth.errorMessage!)),
+        );
       }
     }
   }
@@ -170,7 +179,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
                   // نسيت كلمة المرور
                   Align(
-                    alignment: Alignment.centerLeft,
+                    alignment: AlignmentDirectional.centerEnd,
                     child: TextButton(
                       onPressed: () {
                         ScaffoldMessenger.of(context).showSnackBar(

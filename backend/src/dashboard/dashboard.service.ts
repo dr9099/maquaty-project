@@ -19,12 +19,16 @@ export class DashboardService {
     const isStoreWide = isOwner || user.isResponsible;
     const workerFilter = isStoreWide ? {} : { workerId: user.workerId! };
 
-    const [owner, salesAgg, cashSalesAgg, cashPaymentsAgg, closing, purchasesTodayAgg, payablesAgg] =
+    const owner = await this.prisma.storeOwner.findUniqueOrThrow({
+      where: { id: storeOwnerId },
+      select: { currency: true, allowResponsiblePurchases: true },
+    });
+
+    const canSeePurchases =
+      isOwner || (Boolean(user.isResponsible) && owner.allowResponsiblePurchases);
+
+    const [salesAgg, cashSalesAgg, cashPaymentsAgg, closing, purchasesTodayAgg, payablesAgg] =
       await Promise.all([
-        this.prisma.storeOwner.findUniqueOrThrow({
-          where: { id: storeOwnerId },
-          select: { currency: true },
-        }),
         // إجمالي المبيعات والعدد
         this.prisma.sale.aggregate({
           where: {
@@ -64,14 +68,14 @@ export class DashboardService {
           },
           select: { status: true },
         }),
-        isOwner
+        canSeePurchases
           ? this.prisma.purchaseInvoice.aggregate({
               where: { storeOwnerId, status: 'POSTED', invoiceDate: todayDate },
               _sum: { totalAmount: true },
               _count: { id: true },
             })
           : Promise.resolve({ _sum: { totalAmount: null }, _count: { id: 0 } }),
-        isOwner
+        canSeePurchases
           ? this.prisma.supplier.aggregate({
               where: { storeOwnerId, deletedAt: null },
               _sum: { currentBalance: true },
@@ -93,7 +97,7 @@ export class DashboardService {
       cash_today: cashToday,
       sales_today_total: salesTotal,
       sales_today_count: salesCount,
-      ...(isOwner
+      ...(canSeePurchases
         ? {
             purchases_today_total: purchasesTodayAgg._sum.totalAmount
               ? Number(purchasesTodayAgg._sum.totalAmount)

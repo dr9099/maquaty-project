@@ -60,6 +60,19 @@ class _GeneralLedgerScreenState extends State<GeneralLedgerScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
   }
 
+  String _getRefTypeLabel(dynamic type, dynamic label) {
+    if (label != null && label.toString().trim().isNotEmpty) {
+      return label.toString().trim();
+    }
+    final key = (type ?? '').toString().trim();
+    for (final opt in _refTypeOptions) {
+      if (opt.key.isNotEmpty && opt.key == key) {
+        return opt.value;
+      }
+    }
+    return 'عملية محاسبية';
+  }
+
   String _fmtDate(DateTime d) {
     final y = d.year.toString().padLeft(4, '0');
     final m = d.month.toString().padLeft(2, '0');
@@ -289,7 +302,7 @@ class _GeneralLedgerScreenState extends State<GeneralLedgerScreen> {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             const Text(
-                              'ميزان المراجعة (Append-Only Double Entry)',
+                              'ميزان المراجعة (قيد محاسبي مزدوج تراكمي)',
                               style: TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.bold,
@@ -531,7 +544,7 @@ class _GeneralLedgerScreenState extends State<GeneralLedgerScreen> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                '${e['reference_type_label'] ?? e['reference_type']} · ${e['description'] ?? ""}',
+                                '${_getRefTypeLabel(e['reference_type'], e['reference_type_label'])} · ${e['description'] ?? ""}',
                                 style: const TextStyle(
                                   fontSize: 11,
                                   color: AppColors.textSecondary,

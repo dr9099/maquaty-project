@@ -1,6 +1,14 @@
 import { IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsPositive, IsString, IsUUID } from 'class-validator';
 
 export class RecordDamagedGoodsDto {
+  @IsOptional()
+  @IsUUID('all', { message: 'معرف العملية غير صالح.' })
+  id?: string;
+
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
+
   @IsUUID('all', { message: 'معرف الصنف يجب أن يكون UUID صالحاً.' })
   itemId: string;
 

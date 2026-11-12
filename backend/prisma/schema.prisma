@@ -250,7 +250,7 @@ model StoreOwner {
   passwordHash              String            @map("password_hash")
   status                    StoreOwnerStatus  @default(TRIAL)
   trialSalesUsed            Int               @default(0) @map("trial_sales_used") // يزيد طالما trial_sales_used < trial_sales_limit
-  trialSalesLimit           Int               @default(100) @map("trial_sales_limit") // snapshot يُزرع من system_settings عند الإنشاء
+  trialSalesLimit           Int               @default(50) @map("trial_sales_limit") // snapshot يُزرع من system_settings عند الإنشاء
   maxWorkersAllowed         Int               @default(0) @map("max_workers_allowed") // رصيد موافقات العمال العاديين من App Owner (R-33)
   tempPasswordHash          String?           @map("temp_password_hash")
   tempPasswordGeneratedAt   DateTime?         @map("temp_password_generated_at")

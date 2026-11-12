@@ -23,6 +23,7 @@ async function request(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      'X-Device-Fingerprint': options.headers?.['x-device-fingerprint'] || options.headers?.['X-Device-Fingerprint'] || 'DEV-OWNER-001',
       ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
       ...(options.headers || {}),
     },
@@ -65,7 +66,7 @@ async function run() {
       phone: '777123456',
       password: 'Passw0rd!',
       passwordConfirmation: 'Passw0rd!',
-      deviceFingerprint: 'DEV-001',
+      deviceFingerprint: 'DEV-OWNER-001',
     },
   });
   check('تسجيل مالك جديد — 201', 201, regRes.status);
@@ -79,22 +80,35 @@ async function run() {
       phone: '777123456',
       password: 'Passw0rd!',
       passwordConfirmation: 'Passw0rd!',
-      deviceFingerprint: 'DEV-002',
+      deviceFingerprint: 'DEV-OWNER-002',
     },
   });
   check('رقم هاتف مكرر يعود بـ 409 PHONE_ALREADY_EXISTS', 'PHONE_ALREADY_EXISTS', dupRes.data?.error?.code);
 
   const badLogin = await request('/v1/auth/login', {
     method: 'POST',
-    body: { phone: '777123456', password: 'wrong', deviceFingerprint: 'DEV-001' },
+    body: { phone: '777123456', password: 'wrong', deviceFingerprint: 'DEV-OWNER-001' },
   });
   check('دخول بكلمة مرور خاطئة 401 INVALID_CREDENTIALS', 'INVALID_CREDENTIALS', badLogin.data?.error?.code);
 
   const loginRes = await request('/v1/auth/login', {
     method: 'POST',
-    body: { phone: '777123456', password: 'Passw0rd!', deviceFingerprint: 'DEV-001' },
+    body: { phone: '777123456', password: 'Passw0rd!', deviceFingerprint: 'DEV-OWNER-001' },
   });
   check('دخول ناجح — 200', 200, loginRes.status);
+
+  // فحص حماية رفض البصمات الافتراضية والقصيرة (R-25)
+  const defLogin = await request('/v1/auth/login', {
+    method: 'POST',
+    body: { phone: '777123456', password: 'Passw0rd!', deviceFingerprint: 'APP-DEVICE-DEFAULT' },
+  });
+  check('رفض بصمة APP-DEVICE-DEFAULT بـ 400', 'INVALID_DEVICE_FINGERPRINT', defLogin.data?.error?.code);
+
+  const shortLogin = await request('/v1/auth/login', {
+    method: 'POST',
+    body: { phone: '777123456', password: 'Passw0rd!', deviceFingerprint: 'SHORT' },
+  });
+  check('رفض بصمة قصيرة أقل من 8 خانات بـ 400', 'INVALID_DEVICE_FINGERPRINT', shortLogin.data?.error?.code);
   const OWNER_TOKEN = loginRes.data?.access_token;
   const REFRESH_TOKEN = loginRes.data?.refresh_token;
   check('وجود توكن وصول للمالك', true, !!OWNER_TOKEN);
@@ -211,7 +225,7 @@ async function run() {
       amount: 3000,
       paymentType: 'ELECTRONIC',
       walletId: WALLET_ID,
-      depositAttachmentUrl: 'https://files.maqouti.test/receipts/rec-01.jpg',
+      depositAttachmentUrl: 'https://files.maquaty.test/receipts/rec-01.jpg',
     },
   });
   check('بيع إلكتروني مع مرفق الإيداع', 'ELECTRONIC', elecOk.data?.sale?.payment_type);
@@ -276,7 +290,7 @@ async function run() {
   // تسجيل دخول العامل العادي
   const wLogin = await request('/v1/auth/login', {
     method: 'POST',
-    body: { phone: '772345678', password: 'Passw0rd!', deviceFingerprint: 'DEV-W1' },
+    body: { phone: '772345678', password: 'Passw0rd!', deviceFingerprint: 'DEV-WORKER-001' },
   });
   const WORKER_TOKEN = wLogin.data?.access_token;
   check('دخول العامل العادي بنجاح', 'WORKER', wLogin.data?.role);
@@ -410,7 +424,7 @@ async function run() {
       quantity: 1,
       isDamaged: true,
       reason: 'تلف أثناء النقل',
-      photoUrl: 'https://files.maqouti.test/damaged/d1.jpg',
+      photoUrl: 'https://files.maquaty.test/damaged/d1.jpg',
     },
   });
   check('تسجيل التالف بنجاح', 201, dmgRes.status);
@@ -619,6 +633,7 @@ async function run() {
     method: 'POST',
     token: OWNER_TOKEN,
     body: { deviceFingerprint: 'DEV-BLOCKED-001' },
+    headers: { 'X-Device-Fingerprint': 'DEV-BLOCKED-001' },
   });
   check('مزامنة جهاز محظور مرفوضة 403 (DEVICE_BLOCKED)', 'DEVICE_BLOCKED', syncBlocked.data?.error?.code);
 
@@ -1659,7 +1674,7 @@ async function run() {
         amount: 2000,
         paymentMethod: 'ELECTRONIC',
         walletId: WALLET_ID,
-        attachmentUrl: 'https://files.maqouti.test/receipts/credit-pay-01.jpg',
+        attachmentUrl: 'https://files.maquaty.test/receipts/credit-pay-01.jpg',
       },
     });
     check('قبول سداد دين العميل عبر المحفظة الإلكترونية مع صورة الإشعار 201', 201, elecDebtOk.status);
@@ -1743,7 +1758,7 @@ async function run() {
         amount: 30000,
         paymentMethod: 'ELECTRONIC',
         walletId: WALLET_ID,
-        attachmentUrl: 'https://files.maqouti.test/receipts/owner-wallet-dep.jpg',
+        attachmentUrl: 'https://files.maquaty.test/receipts/owner-wallet-dep.jpg',
         note: 'تغذية المحفظة الإلكترونية من حساب المالك',
       },
     });

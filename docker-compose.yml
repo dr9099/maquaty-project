@@ -1,21 +1,21 @@
 # بيئة التطوير المحلية: PostgreSQL + API
 # التشغيل: docker compose up --build
-name: maqouti-dev
+name: maquaty-dev
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: maqouti
-      POSTGRES_PASSWORD: maqouti
-      POSTGRES_DB: maqouti
+      POSTGRES_USER: maquaty
+      POSTGRES_PASSWORD: maquaty
+      POSTGRES_DB: maquaty
     ports:
       - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U maqouti -d maqouti']
+      test: ['CMD-SHELL', 'pg_isready -U maquaty -d maquaty']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -30,7 +30,7 @@ services:
       NODE_ENV: development
       PORT: 3000
       TRUST_PROXY: 0
-      DATABASE_URL: postgresql://maqouti:maqouti@postgres:5432/maqouti?schema=public
+      DATABASE_URL: postgresql://maquaty:maquaty@postgres:5432/maquaty?schema=public
       CORS_ORIGINS: http://localhost:3001
     ports:
       - '3000:3000'

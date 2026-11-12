@@ -47,6 +47,10 @@ export class CreateSupplierDto {
   @IsUUID('4', { message: 'معرّف المورد غير صالح.' })
   id?: string;
 
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
+
   @IsString({ message: 'اسم المورد مطلوب.' })
   @IsNotEmpty({ message: 'اسم المورد مطلوب.' })
   @MinLength(2, { message: 'اسم المورد يجب ألا يقل عن حرفين.' })
@@ -152,6 +156,14 @@ export class RecordSupplierPaymentDto {
   @IsOptional()
   @IsUUID('4', { message: 'معرّف الدفعة غير صالح.' })
   id?: string;
+
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
+
+  @IsOptional()
+  @IsUUID('4', { message: 'معرّف المورد غير صالح.' })
+  supplierId?: string;
 
   @Type(() => Number)
   @IsNumber({}, { message: 'مبلغ الدفعة مطلوب ويجب أن يكون رقماً.' })

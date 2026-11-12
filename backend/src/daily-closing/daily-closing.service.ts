@@ -128,7 +128,14 @@ export class DailyClosingService {
             },
             _sum: { amount: true },
           })
-        : Promise.resolve({ _sum: { amount: null } }),
+        : this.prisma.workerAdvance.aggregate({
+            where: {
+              storeOwnerId,
+              paymentMethod: 'CASH',
+              recordedAt: { gte: todayDate, lt: tomorrowDate },
+            },
+            _sum: { amount: true },
+          }),
       targetWorkerId === null
         ? this.prisma.employeeAdvance.aggregate({
             where: {
@@ -230,7 +237,8 @@ export class DailyClosingService {
         Number(empCashSalariesAgg._sum.paidAmount ?? 0) +
         Number(cashRentsAgg._sum.paidAmount ?? 0) +
         Number(cashUtilitiesAgg._sum.paidAmount ?? 0) +
-        Number(cashAccrualSettlementsAgg._sum.amount ?? 0),
+        Number(cashAccrualSettlementsAgg._sum.amount ?? 0) +
+        workerCashAdvancesTotal,
     );
     const cashExpensesAndAdvancesTotal =
       targetWorkerId === null ? ownerCashExpensesTotal : workerCashAdvancesTotal;
@@ -317,6 +325,40 @@ export class DailyClosingService {
       }),
     ]);
 
+    let workersList: Array<{
+      id: string;
+      name: string;
+      full_name: string;
+      phone: string;
+      is_responsible: boolean;
+      status: string;
+    }> = [];
+
+    if (user.role === 'STORE_OWNER' || user.isResponsible) {
+      const activeWorkers = await this.prisma.worker.findMany({
+        where: {
+          storeOwnerId,
+          status: { not: 'DELETED' },
+        },
+        orderBy: [{ isResponsible: 'desc' }, { fullName: 'asc' }],
+        select: {
+          id: true,
+          fullName: true,
+          phone: true,
+          isResponsible: true,
+          status: true,
+        },
+      });
+      workersList = activeWorkers.map((w) => ({
+        id: w.id,
+        name: w.fullName,
+        full_name: w.fullName,
+        phone: w.phone,
+        is_responsible: w.isResponsible,
+        status: w.status,
+      }));
+    }
+
     return {
       closing_id: closing.id,
       closing_date: closing.closingDate,
@@ -326,6 +368,7 @@ export class DailyClosingService {
       actual_cash: Number(closing.actualCash),
       expected_cash: Number(closing.expectedCash),
       difference: Number(closing.difference),
+      workers: workersList,
       summary: {
         opening_cash: openingCash,
         total_sales: allSales._sum.amount ? Number(allSales._sum.amount) : 0,
@@ -369,6 +412,13 @@ export class DailyClosingService {
         if (!user.isResponsible) {
           throw ApiError.forbidden('PERMISSION_DENIED', 'لا تملك صلاحية تعديل كاش عامل آخر.');
         }
+        // العامل المسؤول ممنوع من تعديل إغلاق صندوق المالك/المتجر العام
+        if (closing.workerId === null) {
+          throw ApiError.forbidden(
+            'PERMISSION_DENIED',
+            'تعديل كاش إغلاق المتجر الخاص بالمالك حصري لمالك المتجر فقط.',
+          );
+        }
         // العامل المسؤول يحتاج صلاحية permEditWorkerClosingCash
         const worker = await this.prisma.worker.findUniqueOrThrow({
           where: { id: user.workerId! },
@@ -405,6 +455,30 @@ export class DailyClosingService {
     };
   }
 
+  async updateWorkerActualCash(
+    user: AuthenticatedUser,
+    id: string,
+    workerId: string,
+    dto: UpdateActualCashDto,
+    ip?: string,
+  ) {
+    if (user.role === 'WORKER' && (!workerId || workerId === '')) {
+      throw ApiError.forbidden(
+        'PERMISSION_DENIED',
+        'تعديل كاش إغلاق المتجر الخاص بالمالك حصري لمالك المتجر فقط.',
+      );
+    }
+    const storeOwnerId = user.storeOwnerId!;
+    const existing = await this.prisma.dailyClosing.findFirst({
+      where: { id, storeOwnerId },
+    });
+    if (existing && existing.workerId === workerId) {
+      return this.updateActualCash(user, id, dto, ip);
+    }
+    const workerClosing = await this.getToday(user, workerId);
+    return this.updateActualCash(user, workerClosing.closing_id, dto, ip);
+  }
+
   // اعتماد الإغلاق النهائي — حصري للمالك دائماً (R-04 / R-21 / R-36)
   async approve(user: AuthenticatedUser, id: string, ip?: string) {
     if (user.role !== 'STORE_OWNER') {
@@ -424,14 +498,26 @@ export class DailyClosingService {
     const tomorrowDate = new Date(todayDate.getTime() + 24 * 60 * 60 * 1000);
 
     return this.prisma.$transaction(async (tx) => {
-      // 1) تحديث حالة الإغلاق
-      const approved = await tx.dailyClosing.update({
-        where: { id },
+      // قفل ذرّي على مستوى الصف داخل المعاملة لمنع تكرار الاعتماد بالتزامن (Race Conditions)
+      const lockResult = await tx.dailyClosing.updateMany({
+        where: { id, storeOwnerId, status: 'OPEN' },
         data: {
           status: 'CLOSED',
           approvedBy: storeOwnerId,
           approvedAt: new Date(),
         },
+      });
+      if (lockResult.count === 0) {
+        const currentClosing = await tx.dailyClosing.findFirst({
+          where: { id, storeOwnerId },
+          select: { id: true },
+        });
+        if (!currentClosing) throw ApiError.notFound('سجل المطابقة غير موجود.');
+        throw ApiError.conflict('DAY_ALREADY_CLOSED', 'هذا الإغلاق معتمد مسبقاً.');
+      }
+
+      const approved = await tx.dailyClosing.findUniqueOrThrow({
+        where: { id },
       });
 
       // 2) ربط العمليات غير المربوطة بهذا الإغلاق

@@ -8,6 +8,7 @@ import '../../../core/network/api_client.dart';
 import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/credit_provider.dart';
+import '../../providers/dashboard_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../providers/sales_provider.dart';
 import '../../providers/store_settings_provider.dart';
@@ -41,8 +42,9 @@ class _SellScreenState extends State<SellScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      context.read<InventoryProvider>().fetchInventory();
-      context.read<CreditProvider>().fetchCustomers();
+      final storeOwnerId = context.read<AuthProvider>().storeOwnerId;
+      context.read<InventoryProvider>().fetchInventory(storeOwnerId: storeOwnerId);
+      context.read<CreditProvider>().fetchCustomers(storeOwnerId: storeOwnerId);
       try {
         final res = await ApiClient().get(ApiEndpoints.wallets);
         if (res.data is List && mounted) {
@@ -175,6 +177,49 @@ class _SellScreenState extends State<SellScreen> {
       return;
     }
 
+    if (_isEmergency && _selectedItem != null) {
+      final item = _selectedItem!;
+      final overridePrice = double.tryParse(_emergencyPriceController.text);
+      if (overridePrice == null || overridePrice <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('يرجى إدخال سعر وحدة اضطراري صحيح')),
+        );
+        return;
+      }
+      final mode = item.emergencyPriceMode;
+      final minAllowed = item.effectiveEmergencyMinPrice;
+      final maxAllowed = item.effectiveEmergencyMaxPrice;
+
+      if (mode == 'COST_ONLY' && minAllowed != null && minAllowed > 0) {
+        if ((overridePrice - minAllowed).abs() > 0.005) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('سياسة الصنف: البيع بسعر التكلفة فقط (${_currencyFormat.format(minAllowed)})')),
+          );
+          return;
+        }
+      } else if (mode == 'COST_PLUS' && minAllowed != null && minAllowed > 0) {
+        if (overridePrice < minAllowed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('الحد الأدنى للسعر الاضطراري لهذا الصنف هو ${_currencyFormat.format(minAllowed)}')),
+          );
+          return;
+        }
+      } else if (mode == 'RANGE_OR_OPEN') {
+        if (minAllowed != null && overridePrice < minAllowed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('الحد الأدنى للسعر الاضطراري لهذا الصنف هو ${_currencyFormat.format(minAllowed)}')),
+          );
+          return;
+        }
+        if (maxAllowed != null && overridePrice > maxAllowed) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('الحد الأعلى للسعر الاضطراري لهذا الصنف هو ${_currencyFormat.format(maxAllowed)}')),
+          );
+          return;
+        }
+      }
+    }
+
     final symbol = context.read<StoreSettingsProvider>().currencySymbol;
     final effectiveKiloQty = (_salesWeightUnit == 'GRAM' && _selectedItem!.isKiloUnit)
         ? (qty / 1000.0)
@@ -219,6 +264,7 @@ class _SellScreenState extends State<SellScreen> {
 
   Future<void> _executeSale(double qty, double amount) async {
     final sales = context.read<SalesProvider>();
+    final auth = context.read<AuthProvider>();
     final success = await sales.createSale(
       itemId: _selectedItem!.id,
       quantity: qty,
@@ -231,13 +277,29 @@ class _SellScreenState extends State<SellScreen> {
       isEmergencySale: _isEmergency,
       emergencyOverridePrice: _isEmergency ? double.tryParse(_emergencyPriceController.text) : null,
       emergencyReason: _isEmergency ? _emergencyReasonController.text.trim() : null,
+      storeOwnerId: auth.storeOwnerId,
+      workerId: auth.workerId,
+      isOwner: auth.isOwner,
+      isResponsibleWorker: auth.isResponsibleWorker,
     );
 
     if (success && mounted) {
+      if (sales.lastAccountStatus != null) {
+        context.read<AuthProvider>().updateAccountStatus(sales.lastAccountStatus!);
+      }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم تسجيل عملية البيع بنجاح ✅')),
+        SnackBar(
+          content: Text(
+            sales.lastOperationQueuedOffline
+                ? 'تم حفظ عملية البيع محلياً وستتم مزامنتها تلقائياً عند توفر الاتصال ✅'
+                : 'تم تسجيل عملية البيع بنجاح ✅',
+          ),
+        ),
       );
-      context.read<InventoryProvider>().fetchInventory();
+      context.read<InventoryProvider>().fetchInventory(storeOwnerId: auth.storeOwnerId);
+      try {
+        context.read<DashboardProvider>().fetchSummary();
+      } catch (_) {}
       setState(() {
         _qtyController.text = '1';
         _isEmergency = false;
@@ -567,6 +629,7 @@ class _SellScreenState extends State<SellScreen> {
                                     : 'تصوير / اختيار إشعار الإيداع',
                               ),
                               onPressed: () async {
+                                final messenger = ScaffoldMessenger.of(context);
                                 try {
                                   final picked = await ImagePicker().pickImage(
                                     source: ImageSource.gallery,
@@ -577,10 +640,14 @@ class _SellScreenState extends State<SellScreen> {
                                   }
                                 } catch (_) {
                                   if (mounted) {
-                                    setState(() {
-                                      _depositAttachmentUrl =
-                                          'https://attachments.maqouti.test/receipt.jpg';
-                                    });
+                                    messenger.showSnackBar(
+                                      const SnackBar(
+                                        backgroundColor: AppColors.lossRed,
+                                        content: Text(
+                                          'تعذر اختيار صورة إشعار الإيداع. يرجى التحقق من صلاحيات الصور.',
+                                        ),
+                                      ),
+                                    );
                                   }
                                 }
                               },
@@ -625,7 +692,13 @@ class _SellScreenState extends State<SellScreen> {
                   setState(() {
                     _isEmergency = val;
                     if (val && _selectedItem != null) {
-                      _emergencyPriceController.text = _selectedItem!.sellPrice.toStringAsFixed(0);
+                      final item = _selectedItem!;
+                      double defaultEmergPrice = item.sellPrice;
+                      final minEmerg = item.effectiveEmergencyMinPrice;
+                      if (minEmerg != null && minEmerg > 0) {
+                        defaultEmergPrice = minEmerg;
+                      }
+                      _emergencyPriceController.text = defaultEmergPrice.toStringAsFixed(0);
                     }
                     _recalculateAmount();
                   });
@@ -647,9 +720,9 @@ class _SellScreenState extends State<SellScreen> {
                     TextFormField(
                       controller: _emergencyPriceController,
                       keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      decoration: const InputDecoration(
-                        labelText: 'سعر الوحدة الاضطراري (ريال)',
-                        prefixIcon: Icon(Icons.price_change_outlined, color: AppColors.lossRed),
+                      decoration: InputDecoration(
+                        labelText: 'سعر الوحدة الاضطراري ($symbol)',
+                        prefixIcon: const Icon(Icons.price_change_outlined, color: AppColors.lossRed),
                       ),
                       onChanged: (_) => _recalculateAmount(),
                     ),

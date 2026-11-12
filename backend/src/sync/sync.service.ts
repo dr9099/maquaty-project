@@ -32,7 +32,7 @@ export class SyncService {
     private readonly purchases: PurchasesService,
     private readonly reports: ReportsService,
     private readonly audit: AuditService,
-  ) {}
+  ) { }
 
   async sync(user: AuthenticatedUser, dto: DeviceSyncDto, ip?: string) {
     const storeOwnerId = user.storeOwnerId!;
@@ -52,19 +52,39 @@ export class SyncService {
     });
 
     let isResponsibleWorker = Boolean(user.isResponsible);
+    let permShowCostPrice = false;
+    let permDamagedGoodsEntry = false;
     if (user.role === 'WORKER' && user.workerId) {
       const liveWorker = await this.prisma.worker.findUnique({
         where: { id: user.workerId },
-        select: { isResponsible: true },
+        select: {
+          isResponsible: true,
+          permShowCostPrice: true,
+          permDamagedGoodsEntry: true,
+        },
       });
       isResponsibleWorker = Boolean(liveWorker?.isResponsible);
+      permShowCostPrice = Boolean(liveWorker?.permShowCostPrice);
+      permDamagedGoodsEntry = Boolean(liveWorker?.permDamagedGoodsEntry);
     }
 
     const isOwner = user.role === 'STORE_OWNER';
     const canManagePurchases =
       isOwner || (user.role === 'WORKER' && isResponsibleWorker && owner.allowResponsiblePurchases);
+    const canSeeCostPrice = canManagePurchases || permShowCostPrice;
 
-    // 1) فحص حالة الجهاز وتحديث بيانات الظهور
+    // 1) التحقق من سلامة البصمة وفحص حالة الجهاز وتحديث بيانات الظهور
+    if (
+      !dto.deviceFingerprint ||
+      dto.deviceFingerprint.trim() === 'APP-DEVICE-DEFAULT' ||
+      dto.deviceFingerprint.trim().length < 8
+    ) {
+      throw ApiError.badRequest(
+        'INVALID_DEVICE_FINGERPRINT',
+        'بصمة الجهاز غير صالحة أو غير مسموح بها. يجب ألا تقل عن 8 خانات وألا تكون قيمة عامة افتراضية.',
+      );
+    }
+
     let device = await this.prisma.device.findUnique({
       where: { deviceFingerprint: dto.deviceFingerprint },
     });
@@ -122,34 +142,62 @@ export class SyncService {
 
       // تنفيذ العملية حسب النوع
       try {
+        const payloadWithClientOp: Record<string, any> = {
+          ...(op.payload ?? {}),
+          clientOpId: op.clientOpId,
+        };
         if (op.opType === 'SALE') {
-          await this.sales.create(user, op.payload as any);
+          await this.sales.create(user, payloadWithClientOp as any);
         } else if (op.opType === 'CREDIT_PAYMENT') {
-          await this.credit.recordPayment(user, op.payload.customerId, op.payload as any, ip);
+          if (user.role === 'WORKER' && !isResponsibleWorker) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل دفعات الآجل (مخصصة للمسؤول أو المالك).');
+          }
+          const customerId =
+            payloadWithClientOp.customerId ?? payloadWithClientOp.creditCustomerId;
+          await this.credit.recordPayment(user, customerId, payloadWithClientOp as any, ip);
         } else if (op.opType === 'DAMAGED_GOODS') {
-          await this.damagedGoods.record(user, op.payload as any, ip);
+          if (user.role === 'WORKER' && !permDamagedGoodsEntry) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل التالف.');
+          }
+          await this.damagedGoods.record(user, payloadWithClientOp as any, ip);
         } else if (op.opType === 'WORKER_ADVANCE') {
           await this.expenses.recordWorkerAdvance(user, op.payload as any);
         } else if (op.opType === 'SUPPLIER_CREATE') {
           if (!canManagePurchases) {
             throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية إدارة الموردين.');
           }
-          await this.suppliers.create(user, op.payload as any, ip);
+          await this.suppliers.create(user, payloadWithClientOp as any, ip);
         } else if (op.opType === 'PURCHASE') {
+          if (user.role === 'WORKER' && !(isResponsibleWorker && owner.allowResponsiblePurchases)) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل فواتير الشراء.');
+          }
           if (!canManagePurchases) {
             throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل فواتير الشراء.');
           }
-          await this.purchases.create(user, op.payload as any, ip);
+          await this.purchases.create(user, payloadWithClientOp as any, ip);
         } else if (op.opType === 'SUPPLIER_PAYMENT') {
           if (!canManagePurchases) {
             throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية سداد الموردين.');
           }
-          await this.suppliers.recordPayment(user, op.payload.supplierId, op.payload as any, ip);
+          await this.suppliers.recordPayment(
+            user,
+            payloadWithClientOp.supplierId,
+            payloadWithClientOp as any,
+            ip,
+          );
         } else if (op.opType === 'PURCHASE_RETURN') {
+          if (user.role === 'WORKER' && !(isResponsibleWorker && owner.allowResponsiblePurchases)) {
+            throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل مرتجعات المشتريات.');
+          }
           if (!canManagePurchases) {
             throw ApiError.forbidden('PERMISSION_DENIED', 'ليس لديك صلاحية تسجيل مرتجعات المشتريات.');
           }
-          await this.purchases.createReturn(user, op.payload.purchaseInvoiceId, op.payload as any, ip);
+          await this.purchases.createReturn(
+            user,
+            payloadWithClientOp.purchaseInvoiceId,
+            payloadWithClientOp as any,
+            ip,
+          );
         } else if (op.opType === 'OWNER_TRANSACTION') {
           if (!isOwner) {
             throw ApiError.forbidden('PERMISSION_DENIED', 'إيداعات ومسحوبات المالك حصرية لمالك المتجر.');
@@ -245,9 +293,10 @@ export class SyncService {
       unit: i.unit,
       quantity: Number(i.quantity),
       sell_price: Number(i.sellPrice),
-      cost_price: canManagePurchases ? Number(i.costPrice) : undefined, // حماية سعر التكلفة لغير المخوّل
+      cost_price: canSeeCostPrice ? Number(i.costPrice) : undefined, // حماية سعر التكلفة لغير المخوّل
       emergency_price_mode: i.emergencyPriceMode,
       emergency_price_plus_fixed: i.emergencyPricePlusFixed ? Number(i.emergencyPricePlusFixed) : null,
+      emergency_price_plus_percent: i.emergencyPricePlusPercent ? Number(i.emergencyPricePlusPercent) : null,
       emergency_price_min: i.emergencyPriceMin ? Number(i.emergencyPriceMin) : null,
       emergency_price_max: i.emergencyPriceMax ? Number(i.emergencyPriceMax) : null,
       updated_at: i.updatedAt,
@@ -320,35 +369,50 @@ export class SyncService {
     }
 
     // Re-read status/trial counters after any SALE ops executed above
-    const refreshedOwner = await this.prisma.storeOwner.findUniqueOrThrow({
-      where: { id: storeOwnerId },
-      select: {
-        status: true,
-        trialSalesUsed: true,
-        trialSalesLimit: true,
-        maxWorkersAllowed: true,
-      },
-    });
+    const [refreshedOwner, serverCreditCustomers] = await Promise.all([
+      this.prisma.storeOwner.findUniqueOrThrow({
+        where: { id: storeOwnerId },
+        select: {
+          status: true,
+          trialSalesUsed: true,
+          trialSalesLimit: true,
+          maxWorkersAllowed: true,
+        },
+      }),
+      this.credit.list(storeOwnerId),
+    ]);
 
-    // إعداد أقل نسخة تطبيق مدعومة (إجبار التحديث عن بعد)
-    const minAppVersionSetting = await this.prisma.systemSetting.findUnique({
-      where: { key: 'min_app_version' },
+    // إعداد أقل نسخة تطبيق مدعومة (إجبار التحديث عن بعد — مع فك غلاف { v } حسب D-06)
+    const minAppVersionSetting = await this.prisma.systemSetting.findFirst({
+      where: { key: { in: ['min_app_version', 'app_min_version'] } },
     });
+    const rawMinVer: unknown = minAppVersionSetting?.value;
+    const unwrappedMinVer =
+      typeof rawMinVer === 'object' && rawMinVer !== null && 'v' in rawMinVer
+        ? (rawMinVer as { v?: unknown }).v
+        : rawMinVer;
     const minAppVersion =
-      (minAppVersionSetting?.value as string) ||
+      (typeof unwrappedMinVer === 'string' && unwrappedMinVer.trim() !== ''
+        ? unwrappedMinVer.trim()
+        : undefined) ||
       process.env.MIN_SUPPORTED_APP_VERSION ||
       '1.0.0';
 
     void this.audit;
+
+    const rejectedOpsList = processedOps.filter((o) => o.status === 'REJECTED');
 
     return {
       new_sync_version: nextSyncVersion,
       account_status: refreshedOwner.status,
       min_app_version: minAppVersion,
       processed_operations: processedOps,
+      rejected_operations: rejectedOpsList,
+      rejectedOperations: rejectedOpsList,
       server_updates: {
         items: serverItems,
         workers: workersList,
+        credit_customers: serverCreditCustomers,
         ...(canManagePurchases ? { suppliers: suppliersList, purchases: recentPurchasesList } : {}),
         store_settings: {
           currency: owner.currency,

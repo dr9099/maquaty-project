@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
@@ -17,6 +18,8 @@ class SupplierModel {
   final double? creditLimit;
   final int? paymentTermsDays;
   final String status;
+  final String currency;
+  final String currencySymbol;
 
   const SupplierModel({
     required this.id,
@@ -31,6 +34,8 @@ class SupplierModel {
     this.creditLimit,
     this.paymentTermsDays,
     this.status = 'ACTIVE',
+    this.currency = 'YER',
+    this.currencySymbol = 'ر.ي',
   });
 
   bool get isActive => status == 'ACTIVE';
@@ -53,6 +58,8 @@ class SupplierModel {
       paymentTermsDays:
           ((json['payment_terms_days'] ?? json['paymentTermsDays']) as num?)?.toInt(),
       status: (json['status'] ?? 'ACTIVE').toString(),
+      currency: (json['currency'] ?? 'YER').toString(),
+      currencySymbol: (json['currency_symbol'] ?? json['currencySymbol'] ?? 'ر.ي').toString(),
     );
   }
 
@@ -195,6 +202,7 @@ class SuppliersProvider with ChangeNotifier {
   List<SupplierModel> _suppliers = [];
   int _totalCount = 0;
   double _totalPayables = 0.0;
+  String _currency = 'YER';
   String _currencySymbol = 'ر.ي';
   bool _isLoading = false;
   String? _errorMessage;
@@ -205,6 +213,7 @@ class SuppliersProvider with ChangeNotifier {
   List<SupplierModel> get suppliers => _suppliers;
   int get totalCount => _totalCount;
   double get totalPayables => _totalPayables;
+  String get currency => _currency;
   String get currencySymbol => _currencySymbol;
   bool get isLoading => _isLoading;
   String? get errorMessage => _errorMessage;
@@ -240,13 +249,29 @@ class SuppliersProvider with ChangeNotifier {
       _suppliers = list;
       _totalCount = (data['total'] as num?)?.toInt() ?? list.length;
       _totalPayables = (data['total_payables'] as num?)?.toDouble() ?? 0.0;
+      _currency = (data['currency'] ?? _currency).toString();
       _currencySymbol = (data['currency_symbol'] ?? _currencySymbol).toString();
 
       if (storeOwnerId != null && storeOwnerId.isNotEmpty) {
         try {
           final db = await AppDatabase.getInstance(storeOwnerId);
+          final unsynced = await db.query(
+            'suppliers',
+            columns: ['id'],
+            where: 'synced = 0',
+          );
+          final pendingSupplierIds = unsynced
+              .map((r) => r['id']?.toString())
+              .whereType<String>()
+              .toSet();
+
           for (final s in list) {
-            await db.insert('suppliers', s.toDbMap(synced: true));
+            if (pendingSupplierIds.contains(s.id)) continue;
+            await db.insert(
+              'suppliers',
+              s.toDbMap(synced: true),
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
           }
         } catch (_) {}
       }
@@ -272,8 +297,21 @@ class SuppliersProvider with ChangeNotifier {
   }) async {
     try {
       final db = await AppDatabase.getInstance(storeOwnerId);
+      final savedCurrency =
+          await AppDatabase.getStoreSetting(db, 'currency') ?? _currency;
+      final savedSymbol =
+          await AppDatabase.getStoreSetting(db, 'currency_symbol') ?? _currencySymbol;
+      _currency = savedCurrency;
+      if (savedSymbol.isNotEmpty) {
+        _currencySymbol = savedSymbol;
+      }
       final rows = await db.query('suppliers', where: 'deleted_at IS NULL');
-      var list = rows.map((r) => SupplierModel.fromJson(r)).toList();
+      var list = rows.map((r) {
+        final map = Map<String, dynamic>.from(r);
+        map['currency'] = r['currency'] ?? savedCurrency;
+        map['currency_symbol'] = r['currency_symbol'] ?? savedSymbol;
+        return SupplierModel.fromJson(map);
+      }).toList();
       if (search != null && search.trim().isNotEmpty) {
         final q = search.trim().toLowerCase();
         list = list
@@ -348,9 +386,9 @@ class SuppliersProvider with ChangeNotifier {
         await db.insert('suppliers', offlineSupplier.toDbMap(synced: false));
         await AppDatabase.enqueueOperation(
           db,
-          clientOpId: _uuid.v4(),
+          clientOpId: generatedId,
           opType: 'SUPPLIER_CREATE',
-          payload: payload,
+          payload: {'clientOpId': generatedId, ...payload},
         );
         await _loadOfflineSuppliers(storeOwnerId);
         _isLoading = false;
@@ -456,6 +494,18 @@ class SuppliersProvider with ChangeNotifier {
     notifyListeners();
 
     final paymentId = _uuid.v4();
+
+    var finalAttachmentUrl = receiptAttachmentUrl;
+    if (finalAttachmentUrl != null && finalAttachmentUrl.trim().isNotEmpty) {
+      final isLocal = !finalAttachmentUrl.startsWith('http') &&
+          !finalAttachmentUrl.startsWith('/v1/uploads/');
+      if (isLocal) {
+        try {
+          finalAttachmentUrl = await _api.uploadFile(finalAttachmentUrl);
+        } catch (_) {}
+      }
+    }
+
     final payload = <String, dynamic>{
       'id': paymentId,
       'amount': amount,
@@ -463,8 +513,8 @@ class SuppliersProvider with ChangeNotifier {
       if (walletId != null && walletId.isNotEmpty) 'walletId': walletId,
       if (purchaseInvoiceId != null && purchaseInvoiceId.isNotEmpty)
         'purchaseInvoiceId': purchaseInvoiceId,
-      if (receiptAttachmentUrl != null && receiptAttachmentUrl.isNotEmpty)
-        'receiptAttachmentUrl': receiptAttachmentUrl,
+      if (finalAttachmentUrl != null && finalAttachmentUrl.isNotEmpty)
+        'receiptAttachmentUrl': finalAttachmentUrl,
       if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
     };
 
@@ -490,10 +540,15 @@ class SuppliersProvider with ChangeNotifier {
         });
         await AppDatabase.enqueueOperation(
           db,
-          clientOpId: _uuid.v4(),
+          clientOpId: paymentId,
           opType: 'SUPPLIER_PAYMENT',
-          payload: {'supplierId': supplierId, ...payload},
+          payload: {'clientOpId': paymentId, 'supplierId': supplierId, ...payload},
         );
+        await db.rawUpdate(
+          'UPDATE suppliers SET current_balance = current_balance - ? WHERE id = ?',
+          [amount, supplierId],
+        );
+        await _loadOfflineSuppliers(storeOwnerId);
         _isLoading = false;
         notifyListeners();
         return true;

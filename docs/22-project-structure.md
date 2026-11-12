@@ -3,7 +3,7 @@
 هيكل المشروع الفعلي بعد اعتماد قرارات التشغيل (R-48). بعض المجلدات توضيحية وليست إلزامية حرفياً (`README.md` يذكر ذلك صراحة).
 
 ```text
-maqouti-project/
+maquaty-project/
 │
 ├── README.md
 ├── AGENT.md

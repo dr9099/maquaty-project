@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/credit_provider.dart';
 import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
@@ -223,10 +224,16 @@ class _CreditScreenState extends State<CreditScreen> {
                             setDialogState(() => attachmentUrl = picked.path);
                           }
                         } catch (_) {
-                          setDialogState(() {
-                            attachmentUrl =
-                                'https://attachments.maqouti.test/credit-payment.jpg';
-                          });
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                backgroundColor: AppColors.lossRed,
+                                content: Text(
+                                  'تعذر اختيار صورة إشعار السداد. يرجى التحقق من صلاحيات الصور.',
+                                ),
+                              ),
+                            );
+                          }
                         }
                       },
                     ),
@@ -278,20 +285,28 @@ class _CreditScreenState extends State<CreditScreen> {
                   }
 
                   final credit = context.read<CreditProvider>();
-                  final success = await credit.recordPayment(
+                  final auth = context.read<AuthProvider>();
+                  final success = await credit.collectDebt(
                     customerId: customer.id,
                     amount: amount,
                     paymentMethod: paymentMethod,
                     walletId: paymentMethod == 'ELECTRONIC' ? selectedWalletId : null,
                     attachmentUrl: paymentMethod == 'ELECTRONIC' ? attachmentUrl : null,
                     notes: notesController.text.trim(),
+                    storeOwnerId: auth.storeOwnerId,
                   );
 
                   if (!mounted) return;
                   if (success) {
                     if (ctx.mounted) Navigator.pop(ctx);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('تم تسجيل دفعة السداد بنجاح ✅')),
+                      SnackBar(
+                        content: Text(
+                          credit.lastOperationQueuedOffline
+                              ? 'تم حفظ دفعة السداد محلياً وستتم مزامنتها تلقائياً ✅'
+                              : 'تم تسجيل دفعة السداد بنجاح ✅',
+                        ),
+                      ),
                     );
                   } else if (credit.errorMessage != null) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -384,11 +399,18 @@ class _CreditScreenState extends State<CreditScreen> {
                                 : isReturn
                                     ? 'مرتجع مبيعات آجلة (-)'
                                     : 'دفعة سداد (-)';
+                            final rawMethod = tx['payment_method']?.toString();
+                            final methodAr = rawMethod == 'CASH'
+                                ? 'نقداً'
+                                : rawMethod == 'ELECTRONIC'
+                                    ? 'إلكترونياً'
+                                    : rawMethod == 'CREDIT'
+                                        ? 'آجل'
+                                        : (rawMethod ?? '');
                             final desc = (tx['item_name'] ??
                                     tx['reason'] ??
                                     tx['note'] ??
-                                    tx['payment_method'] ??
-                                    '')
+                                    methodAr)
                                 .toString();
                             final dateStr = (tx['date'] ?? '').toString();
 

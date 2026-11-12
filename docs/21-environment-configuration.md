@@ -8,7 +8,7 @@
 
 ```env
 # قاعدة البيانات
-DATABASE_URL=postgresql://user:pass@host:5432/maqouti?schema=public
+DATABASE_URL=postgresql://user:pass@host:5432/maquaty?schema=public
 
 # المصادقة
 JWT_SECRET=...
@@ -28,10 +28,10 @@ PORT=3000
 LOG_LEVEL=info
 
 # عدد مستويات الـ Proxy الموثوقة خلف Cloudflare/Caddy
-TRUST_PROXY=1
+TRUST_PROXY=2
 
 # CORS — نطاقات مفصولة بفاصلة (مطلوب في الإنتاج)
-CORS_ORIGINS=https://admin.maqouti.app
+CORS_ORIGINS=https://admin.maquaty.app
 
 # مراقبة الأخطاء (اختياري)
 SENTRY_DSN=
@@ -49,7 +49,7 @@ FILE_STORAGE_ACCESS_KEY=...
 FILE_STORAGE_SECRET_KEY=...
 ```
 
-- `TRUST_PROXY=1` مطلوب خلف Cloudflare/Caddy للحصول على IP الحقيقي (Rate Limiting وسجل التدقيق). محلياً `0`.
+- `TRUST_PROXY=2` مطلوب خلف Cloudflare/Caddy للحصول على IP الحقيقي (Rate Limiting وسجل التدقيق). محلياً `0`.
 - `CORS_ORIGINS` فارغ في الإنتاج = منع كل الأصول الخارجية (same-origin فقط). لا تتركه فارغاً إن كانت البوابة على نطاق فرعي.
 - **كل هذه القيم تُدار عبر Secret Manager أو متغيرات بيئة خادم فقط — لا تُكتب أبداً في الكود أو Git (`13-authentication-security.md` القسم 12).**
 
@@ -58,7 +58,7 @@ FILE_STORAGE_SECRET_KEY=...
 
 ## 3. إعدادات لوحة الأدمن (Admin Portal — وقت البناء)
 ```env
-NEXT_PUBLIC_API_URL=https://api.maqouti.app/v1
+NEXT_PUBLIC_API_URL=https://api.maquaty.app/v1
 NEXT_TELEMETRY_DISABLED=1
 ```
 `NEXT_PUBLIC_API_URL` يُدمج وقت **بناء** صورة Next.js (build arg)، وليس وقت التشغيل. أي تغيير فيه يتطلب إعادة بناء الصورة.
@@ -67,16 +67,16 @@ NEXT_TELEMETRY_DISABLED=1
 ```env
 GHCR_OWNER=<github-owner>
 IMAGE_TAG=<sha>
-ACME_EMAIL=admin@maqouti.app
-API_DOMAIN=api.maqouti.app
-ADMIN_DOMAIN=admin.maqouti.app
-SITE_DOMAIN=www.maqouti.app
-APEX_DOMAIN=maqouti.app
+ACME_EMAIL=admin@maquaty.app
+API_DOMAIN=api.maquaty.app
+ADMIN_DOMAIN=admin.maquaty.app
+SITE_DOMAIN=www.maquaty.app
+APEX_DOMAIN=maquaty.app
 ```
 إضافة إلى أسرار الـ Backend في القسم 1، وأسرار النسخ الاحتياطي:
 ```env
 BACKUP_PASSPHRASE=...
-RCLONE_REMOTE=r2:maqouti-backups
+RCLONE_REMOTE=r2:maquaty-backups
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
 R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
@@ -88,11 +88,11 @@ BACKUP_RETENTION=30d
 | الاسم | النوع | الغرض |
 |---|---|---|
 | `VPS_HOST` / `VPS_USER` / `VPS_SSH_KEY` | Secret | SSH إلى خادم الإنتاج |
-| `DEPLOY_PATH` | Secret | مسار المستودد على الخادم (مثل `/opt/maqouti`) |
+| `DEPLOY_PATH` | Secret | مسار المستودد على الخادم (مثل `/opt/maquaty`) |
 | `GHCR_USER` / `GHCR_TOKEN` | Secret | PAT بصلاحية `read:packages` لسحب الصور على الخادم |
 | `PRODUCTION_DATABASE_URL` | Secret | اتصال PostgreSQL للنسخ الاحتياطي |
 | `BACKUP_PASSPHRASE` | Secret | تشفير النسخ (GPG AES256) |
-| `RCLONE_REMOTE` | Secret | وجهة النسخ (مثل `r2:maqouti-backups`) |
+| `RCLONE_REMOTE` | Secret | وجهة النسخ (مثل `r2:maquaty-backups`) |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_ENDPOINT` | Secret | بيانات R2/B2 |
 | `NEXT_PUBLIC_API_URL` | Variable | عنوان API وقت بناء لوحة الأدمن |
 | `API_DOMAIN` | Variable | نطاق API لفحص الصحة بعد النشر |

@@ -46,6 +46,18 @@ export class DailyClosingController {
     return this.dailyClosing.updateActualCash(getRequestUser(req), id, dto, ip);
   }
 
+  @Patch(':id/workers/:workerId/cash')
+  @RequireRoles({ roles: ['STORE_OWNER', 'WORKER'] })
+  updateWorkerActualCash(
+    @Param('id') id: string,
+    @Param('workerId') workerId: string,
+    @Body() dto: UpdateActualCashDto,
+    @Req() req: Request,
+    @Ip() ip: string,
+  ) {
+    return this.dailyClosing.updateWorkerActualCash(getRequestUser(req), id, workerId, dto, ip);
+  }
+
   @Post(':id/approve')
   @HttpCode(HttpStatus.OK)
   @RequireRoles({ roles: ['STORE_OWNER'] })

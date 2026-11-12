@@ -16,7 +16,9 @@ export class StepUpMfaGuard implements CanActivate {
       throw ApiError.forbidden('PERMISSION_DENIED', 'هذا الإجراء حصري لمالك المنصة.');
     }
 
-    const code = (request.headers['x-mfa-code'] || request.headers['x-mfa-token']) as string | undefined;
+    const code = (request.headers['x-mfa-code'] ||
+      request.headers['x-mfa-token'] ||
+      request.headers['x-step-up-code']) as string | undefined;
     if (!code || typeof code !== 'string' || !/^\d{6}$/.test(code.trim())) {
       throw ApiError.badRequest(
         'INVALID_MFA_CODE',

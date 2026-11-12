@@ -8,7 +8,7 @@ info:
     بقية المسارات موثقة نصياً في API_SPEC.md وتُستكمل هنا بنفس النمط في نسخة لاحقة.
   version: "0.1.0-draft"
 servers:
-  - url: https://api.maqouti.app/v1
+  - url: https://api.maquaty.app/v1
     description: Production (مثال، يُحدَّد فعلياً لاحقاً)
 
 security:

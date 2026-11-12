@@ -24,6 +24,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { PurchasesModule } from './purchases/purchases.module';
 import { HealthModule } from './health/health.module';
 import { AdminModule } from './admin/admin.module';
+import { UploadsModule } from './uploads/uploads.module';
 
 // مَقوتي — Central Backend Server
 // المرحلة 1 ✓ (قاعدة البيانات + Auth + عزل Tenant + دليل الحسابات)
@@ -55,6 +56,7 @@ import { AdminModule } from './admin/admin.module';
     PurchasesModule,
     HealthModule,
     AdminModule,
+    UploadsModule,
   ],
   providers: [
     // الترتيب ملزم: المصادقة أولاً ثم فحص حالة الحساب عند كل طلب (12-business §3)

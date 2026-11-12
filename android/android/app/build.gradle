@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.kareemtech.maqouti"
+    namespace = "com.kareemtech.maquaty"
     compileSdk = 35
     ndkVersion = "26.1.10909125"
 
@@ -20,7 +20,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.kareemtech.maqouti"
+        applicationId = "com.kareemtech.maquaty"
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -68,9 +68,9 @@ android {
         variant.outputs.all { output ->
             def abi = output.getFilter(com.android.build.OutputFile.ABI)
             if (abi != null) {
-                outputFileName = "Maqouti_v1.0.0_${abi}.apk"
+                outputFileName = "Maquaty_v1.0.0_${abi}.apk"
             } else {
-                outputFileName = "Maqouti_v1.0.0.apk"
+                outputFileName = "Maquaty_v1.0.0.apk"
             }
         }
     }

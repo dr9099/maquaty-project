@@ -257,7 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   child: const Icon(Icons.fact_check_outlined, color: AppColors.primary),
                 ),
-                title: const Text('المطابقة والإغلاق اليومي (R-36)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                title: const Text('المطابقة والإغلاق اليومي', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                 subtitle: Text(
                   isClosed ? 'تم اعتماد إغلاق اليوم بنجاح' : 'مطابقة الكاش الفعلي مع المتوقع واعتماد الإغلاق',
                   style: const TextStyle(fontSize: 12),

@@ -43,7 +43,11 @@ class _SetNewPasswordScreenState extends State<SetNewPasswordScreen> {
     }
 
     final auth = context.read<AuthProvider>();
-    final success = await auth.changeTempPassword(widget.tempPassword, newPass);
+    final success = await auth.changeTempPassword(
+      widget.tempPassword,
+      newPass,
+      newPasswordConfirmation: confirm,
+    );
 
     if (success && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

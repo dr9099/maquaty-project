@@ -193,6 +193,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
   double _extractHeadlineTotal(Map<String, dynamic>? d) {
     if (d == null) return 0.0;
     final candidates = [
+      d['total_net_purchased'],
+      d['total_current_payables'],
       d['net_profit'],
       d['total_amount'],
       d['net_sales'],
@@ -234,7 +236,8 @@ class _ReportsScreenState extends State<ReportsScreen> {
       return 'فاتورة ${r['invoice_number']} · المورد: ${r['supplier_name']} · كمية: $displayQty';
     }
     if (r.containsKey('invoices_count') && r.containsKey('total_paid')) {
-      return 'عدد الفواتير: ${r['invoices_count']} · مسدد: ${r['total_paid']} · متبقي: ${r['total_remaining']}';
+      final rem = r['current_balance'] ?? r['total_remaining'] ?? 0;
+      return 'عدد الفواتير: ${r['invoices_count']} · مسدد: ${r['total_paid']} · متبقي: $rem';
     }
     if (r.containsKey('aging') && r['aging'] is Map) {
       final ag = Map<String, dynamic>.from(r['aging']);
@@ -256,9 +259,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   double _recordAmount(Map<String, dynamic> r) {
     final candidates = [
+      r['net_purchased'],
+      r['net_purchases'],
       r['amount'],
       r['total_purchase_cost'],
-      r['net_purchases'],
       r['current_balance'],
       r['gross_profit'],
       r['total_cost'],
@@ -411,7 +415,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               isNeg: true,
             ),
             _stmtLine(
-              '(=) مجمل الربح (Gross Profit)',
+              '(=) مجمل الربح',
               grossProfit,
               symbol,
               isSubtotal: true,

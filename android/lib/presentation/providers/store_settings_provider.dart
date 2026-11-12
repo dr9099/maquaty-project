@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
+import '../../core/storage/secure_storage_service.dart';
+import '../../data/local/app_database.dart';
 
 class CostingOptionInfo {
   final String code;
@@ -53,6 +55,8 @@ class StoreSettingsProvider with ChangeNotifier {
   bool _currencyLocked = false;
   String _defaultCostingMethod = 'WEIGHTED_AVERAGE';
   bool _allowResponsiblePurchases = false;
+  bool _promptOnSameDayPriceDiff = true;
+  bool _allowSellerChoosePrice = false;
   bool _isLoading = false;
   String? _errorMessage;
   String? _errorCode;
@@ -96,6 +100,8 @@ class StoreSettingsProvider with ChangeNotifier {
   bool get currencyLocked => _currencyLocked;
   String get defaultCostingMethod => _defaultCostingMethod;
   bool get allowResponsiblePurchases => _allowResponsiblePurchases;
+  bool get promptOnSameDayPriceDiff => _promptOnSameDayPriceDiff;
+  bool get allowSellerChoosePrice => _allowSellerChoosePrice;
   List<CurrencyOptionInfo> get supportedCurrencies => _supportedCurrencies;
   List<CostingOptionInfo> get costingOptions => _costingOptions;
   bool get isLoading => _isLoading;
@@ -111,6 +117,18 @@ class StoreSettingsProvider with ChangeNotifier {
       case 'YER':
       default:
         return 'ر.ي';
+    }
+  }
+
+  static String nameArForCurrency(String code) {
+    switch (code) {
+      case 'SAR':
+        return 'ريال سعودي';
+      case 'USD':
+        return 'دولار أمريكي';
+      case 'YER':
+      default:
+        return 'ريال يمني';
     }
   }
 
@@ -136,6 +154,12 @@ class StoreSettingsProvider with ChangeNotifier {
     if (data.containsKey('allow_responsible_purchases')) {
       _allowResponsiblePurchases = data['allow_responsible_purchases'] == true;
     }
+    if (data.containsKey('prompt_on_same_day_price_diff')) {
+      _promptOnSameDayPriceDiff = data['prompt_on_same_day_price_diff'] == true;
+    }
+    if (data.containsKey('allow_seller_choose_price')) {
+      _allowSellerChoosePrice = data['allow_seller_choose_price'] == true;
+    }
     if (data['supported_currencies'] is List) {
       _supportedCurrencies = (data['supported_currencies'] as List)
           .map((e) => CurrencyOptionInfo.fromJson(Map<String, dynamic>.from(e)))
@@ -148,7 +172,87 @@ class StoreSettingsProvider with ChangeNotifier {
     }
   }
 
-  Future<void> fetchSettings() async {
+  Future<void> _persistToLocalDb({String? storeOwnerId}) async {
+    try {
+      String? ownerId = storeOwnerId;
+      if (ownerId == null || ownerId.isEmpty) {
+        final account = await SecureStorageService().getActiveAccount();
+        ownerId = account?.id;
+      }
+      if (ownerId == null || ownerId.isEmpty) return;
+      final db = await AppDatabase.getInstance(ownerId);
+      await AppDatabase.setStoreSetting(db, 'currency', _currency);
+      await AppDatabase.setStoreSetting(db, 'currency_symbol', _currencySymbol);
+      await AppDatabase.setStoreSetting(db, 'currency_name_ar', _currencyNameAr);
+      await AppDatabase.setStoreSetting(
+        db,
+        'default_costing_method',
+        _defaultCostingMethod,
+      );
+      await AppDatabase.setStoreSetting(
+        db,
+        'allow_responsible_purchases',
+        _allowResponsiblePurchases.toString(),
+      );
+      await AppDatabase.setStoreSetting(
+        db,
+        'prompt_on_same_day_price_diff',
+        _promptOnSameDayPriceDiff.toString(),
+      );
+      await AppDatabase.setStoreSetting(
+        db,
+        'allow_seller_choose_price',
+        _allowSellerChoosePrice.toString(),
+      );
+      if (_storeName.isNotEmpty) {
+        await AppDatabase.setStoreSetting(db, 'store_name', _storeName);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> loadSettingsFromLocalDb({String? storeOwnerId}) async {
+    try {
+      String? ownerId = storeOwnerId;
+      if (ownerId == null || ownerId.isEmpty) {
+        final account = await SecureStorageService().getActiveAccount();
+        ownerId = account?.id;
+      }
+      if (ownerId == null || ownerId.isEmpty) return;
+      final db = await AppDatabase.getInstance(ownerId);
+
+      final savedCurrency = await AppDatabase.getStoreSetting(db, 'currency');
+      final savedSymbol = await AppDatabase.getStoreSetting(db, 'currency_symbol');
+      final savedCosting = await AppDatabase.getStoreSetting(db, 'default_costing_method');
+      final savedAllowResp = await AppDatabase.getStoreSetting(db, 'allow_responsible_purchases');
+      final savedPrompt = await AppDatabase.getStoreSetting(db, 'prompt_on_same_day_price_diff');
+      final savedAllowSeller = await AppDatabase.getStoreSetting(db, 'allow_seller_choose_price');
+      final savedStoreName = await AppDatabase.getStoreSetting(db, 'store_name');
+
+      if (savedCurrency != null && savedCurrency.isNotEmpty) {
+        _currency = savedCurrency;
+        _currencySymbol = savedSymbol ?? symbolForCurrency(_currency);
+        _currencyNameAr = nameArForCurrency(_currency);
+      }
+      if (savedCosting != null && savedCosting.isNotEmpty) {
+        _defaultCostingMethod = savedCosting;
+      }
+      if (savedAllowResp != null) {
+        _allowResponsiblePurchases = savedAllowResp == 'true';
+      }
+      if (savedPrompt != null) {
+        _promptOnSameDayPriceDiff = savedPrompt == 'true';
+      }
+      if (savedAllowSeller != null) {
+        _allowSellerChoosePrice = savedAllowSeller == 'true';
+      }
+      if (savedStoreName != null && savedStoreName.isNotEmpty) {
+        _storeName = savedStoreName;
+      }
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> fetchSettings({String? storeOwnerId}) async {
     _isLoading = true;
     _errorMessage = null;
     _errorCode = null;
@@ -158,12 +262,15 @@ class StoreSettingsProvider with ChangeNotifier {
       final res = await _api.get(ApiEndpoints.storeSettings);
       if (res.data is Map) {
         applyFromJson(Map<String, dynamic>.from(res.data));
+        await _persistToLocalDb(storeOwnerId: storeOwnerId);
       }
     } on ApiException catch (e) {
       _errorCode = e.code;
       _errorMessage = e.message;
+      await loadSettingsFromLocalDb(storeOwnerId: storeOwnerId);
     } catch (e) {
       _errorMessage = e.toString();
+      await loadSettingsFromLocalDb(storeOwnerId: storeOwnerId);
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -194,6 +301,7 @@ class StoreSettingsProvider with ChangeNotifier {
       final res = await _api.patch(ApiEndpoints.storeSettings, data: payload);
       if (res.data is Map) {
         applyFromJson(Map<String, dynamic>.from(res.data));
+        await _persistToLocalDb();
       }
       _isLoading = false;
       notifyListeners();

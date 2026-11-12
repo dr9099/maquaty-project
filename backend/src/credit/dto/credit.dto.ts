@@ -30,6 +30,18 @@ export class UpdateCreditCustomerDto {
 }
 
 export class RecordCreditPaymentDto {
+  @IsOptional()
+  @IsUUID('all', { message: 'معرف الدفعة غير صالح.' })
+  id?: string;
+
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
+
+  @IsOptional()
+  @IsUUID('all', { message: 'معرف العميل غير صالح.' })
+  customerId?: string;
+
   @IsNumber({}, { message: 'المبلغ يجب أن يكون رقماً.' })
   @IsPositive({ message: 'مبلغ الدفعة يجب أن يكون أكبر من صفر.' })
   amount: number;

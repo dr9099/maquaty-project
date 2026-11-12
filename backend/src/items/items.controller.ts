@@ -77,11 +77,15 @@ export class ItemsController {
     if (user.role === 'WORKER') {
       const worker = await this.prisma.worker.findUniqueOrThrow({
         where: { id: user.workerId! },
-        select: { permShowSellPricesInventory: true },
+        select: { permShowSellPricesInventory: true, permShowCostPrice: true },
       });
       return this.items.inventory(
         user.storeOwnerId!,
-        { isWorker: true, showSellPrices: worker.permShowSellPricesInventory },
+        {
+          isWorker: true,
+          showSellPrices: worker.permShowSellPricesInventory,
+          showCostPrice: worker.permShowCostPrice || Boolean(user.allowResponsiblePurchases),
+        },
         search,
         parsedLimit,
         parsedOffset,
@@ -89,7 +93,7 @@ export class ItemsController {
     }
     return this.items.inventory(
       user.storeOwnerId!,
-      { isWorker: false, showSellPrices: true },
+      { isWorker: false, showSellPrices: true, showCostPrice: true },
       search,
       parsedLimit,
       parsedOffset,

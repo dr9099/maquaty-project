@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import {
   ActorType,
   AuditResult,
@@ -16,6 +16,7 @@ import { randomBytes } from 'node:crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { AccountStatusGuard } from '../common/account-status.guard';
 import {
   AuditLogQueryDto,
   BroadcastsQueryDto,
@@ -34,20 +35,79 @@ import {
 
 const ALLOWED_SETTING_KEYS = [
   'trial_sales_limit',
+  'trial_days_default',
   'trial_warning_threshold',
+  'max_workers_default',
   'contact_phone',
   'contact_whatsapp',
   'admin_notice',
   'app_min_version',
+  'min_app_version',
   'backup_retention_days',
+  'default_emergency_price_mode',
+  'trial_expired_message',
+  'subscription_expired_message',
+  'suspended_message',
 ];
 
 @Injectable()
-export class AdminService {
+export class AdminService implements OnModuleInit {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  async onModuleInit() {
+    await this.seedInitialAdminAndSettings();
+  }
+
+  async seedInitialAdminAndSettings() {
+    try {
+      const email = process.env.ADMIN_INITIAL_EMAIL;
+      const phone = process.env.ADMIN_INITIAL_PHONE || email;
+      const password = process.env.ADMIN_INITIAL_PASSWORD;
+
+      if ((email || phone) && password) {
+        const adminCount = await this.prisma.platformAdmin.count();
+        if (adminCount === 0) {
+          const passwordHash = await hash(password);
+          await this.prisma.platformAdmin.create({
+            data: {
+              fullName: 'مدير المنصة',
+              phone: (phone || email)!.trim(),
+              passwordHash,
+            },
+          });
+          this.logger.log('تم إنشاء حساب مدير المنصة الأولي بنجاح');
+        }
+      }
+
+      // Upsert default system settings if missing
+      const defaultSettings: Array<{ key: string; value: any }> = [
+        { key: 'trial_sales_limit', value: 50 },
+        { key: 'trial_warning_threshold', value: 30 },
+        { key: 'contact_phone', value: '735717710' },
+      ];
+
+      for (const setting of defaultSettings) {
+        const existing = await this.prisma.systemSetting.findUnique({
+          where: { key: setting.key },
+        });
+        if (!existing) {
+          await this.prisma.systemSetting.create({
+            data: {
+              key: setting.key,
+              value: { v: setting.value },
+            },
+          });
+        }
+      }
+    } catch (err: any) {
+      this.logger.warn(`تعذر استكمال التهيئة الأولية: ${err.message}`);
+    }
+  }
 
   // ═══════════════════════ إدارة المتاجر وأصحاب المتاجر ═══════════════════════
 
@@ -204,6 +264,8 @@ export class AdminService {
         ipAddress,
       });
 
+      AccountStatusGuard.invalidateOwner(id);
+
       return updated;
     }
 
@@ -257,6 +319,8 @@ export class AdminService {
       ipAddress,
     });
 
+    AccountStatusGuard.invalidateOwner(id);
+
     return result;
   }
 
@@ -284,6 +348,17 @@ export class AdminService {
 
       // إذا انخفض الحد، نطبق LIFO على العمال العاديين النشطين دون المساس بالعامل المسؤول (D-05)
       if (newLimit < oldLimit) {
+        const activeResponsibleCount = await tx.worker.count({
+          where: {
+            storeOwnerId: id,
+            status: WorkerStatus.ACTIVE,
+            isResponsible: true,
+            deletedAt: null,
+          },
+        });
+
+        const allowedNormalSlots = Math.max(0, newLimit - activeResponsibleCount);
+
         const activeNormalWorkers = await tx.worker.findMany({
           where: {
             storeOwnerId: id,
@@ -294,8 +369,8 @@ export class AdminService {
           orderBy: { createdAt: 'desc' }, // LIFO: الأحدث أولاً
         });
 
-        if (activeNormalWorkers.length > newLimit) {
-          const excessCount = activeNormalWorkers.length - newLimit;
+        if (activeNormalWorkers.length > allowedNormalSlots) {
+          const excessCount = activeNormalWorkers.length - allowedNormalSlots;
           const workersToSuspend = activeNormalWorkers.slice(0, excessCount);
 
           for (const worker of workersToSuspend) {
@@ -308,6 +383,10 @@ export class AdminService {
         }
       }
     });
+
+    for (const workerId of suspendedWorkerIds) {
+      AccountStatusGuard.invalidateWorker(workerId);
+    }
 
     await this.audit.log({
       actorType: ActorType.PLATFORM_ADMIN,
@@ -342,7 +421,8 @@ export class AdminService {
     // توليد كلمة مرور مؤقتة عشوائية آمنة من 8 خانات سهلة القراءة
     const plainTemp = randomBytes(4).toString('hex').toUpperCase();
     const passwordHash = await hash(plainTemp);
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // صالحة 24 ساعة
+    const validityHours = Number(process.env.TEMP_PASSWORD_VALIDITY_HOURS ?? 24);
+    const expiresAt = new Date(Date.now() + validityHours * 3_600_000);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.storeOwner.update({
@@ -547,6 +627,8 @@ export class AdminService {
       ipAddress,
     });
 
+    AccountStatusGuard.invalidateOwner(storeOwnerId);
+
     return subscription;
   }
 
@@ -625,6 +707,8 @@ export class AdminService {
       ipAddress,
     });
 
+    AccountStatusGuard.invalidateOwner(sub.storeOwnerId);
+
     return updated;
   }
 
@@ -701,6 +785,8 @@ export class AdminService {
       ipAddress,
     });
 
+    AccountStatusGuard.invalidateDevice(device.deviceFingerprint);
+
     return { success: true, id, status: DeviceStatus.BLOCKED };
   }
 
@@ -725,6 +811,8 @@ export class AdminService {
       result: AuditResult.SUCCESS,
       ipAddress,
     });
+
+    AccountStatusGuard.invalidateDevice(device.deviceFingerprint);
 
     return { success: true, id, status: DeviceStatus.ACTIVE };
   }
@@ -896,6 +984,13 @@ export class AdminService {
       result[s.key] = val && typeof val === 'object' && 'v' in val ? val.v : val;
     }
 
+    // توحيد مفتاحي إصدار التطبيق بين لوحة الإدارة والموبايل (min_app_version / app_min_version)
+    const minVersion = result.min_app_version ?? result.app_min_version;
+    if (minVersion !== undefined) {
+      result.min_app_version = minVersion;
+      result.app_min_version = minVersion;
+    }
+
     return result;
   }
 
@@ -918,6 +1013,15 @@ export class AdminService {
           'VALIDATION_ERROR',
           `مفتاح الإعداد '${entry.key}' غير مدعوم في النظام.`,
         );
+      }
+    }
+
+    // مزامنة تلقائية بين min_app_version و app_min_version لضمان الاتساق
+    const minVerEntry = entries.find((e) => e.key === 'min_app_version' || e.key === 'app_min_version');
+    if (minVerEntry) {
+      const otherKey = minVerEntry.key === 'min_app_version' ? 'app_min_version' : 'min_app_version';
+      if (!entries.some((e) => e.key === otherKey)) {
+        entries.push({ key: otherKey, value: minVerEntry.value });
       }
     }
 
@@ -946,6 +1050,8 @@ export class AdminService {
       result: AuditResult.SUCCESS,
       ipAddress,
     });
+
+    AccountStatusGuard.clearAllCache();
 
     return this.getSettings();
   }

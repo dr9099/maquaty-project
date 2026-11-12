@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
 import 'core/network/api_client.dart';
+import 'core/services/device_info_service.dart';
 import 'core/theme/app_theme.dart';
 import 'data/repositories/auth_repository.dart';
 import 'presentation/providers/auth_provider.dart';
@@ -14,6 +15,7 @@ import 'presentation/providers/purchases_provider.dart';
 import 'presentation/providers/sales_provider.dart';
 import 'presentation/providers/store_settings_provider.dart';
 import 'presentation/providers/suppliers_provider.dart';
+import 'presentation/providers/sync_provider.dart';
 
 import 'presentation/screens/auth/account_locked_screen.dart';
 import 'presentation/screens/accounting/general_ledger_screen.dart';
@@ -43,6 +45,9 @@ import 'presentation/screens/workers/workers_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // تهيئة وحفظ بصمة الجهاز في الذاكرة مسبقاً قبل أي طلب شبكي (R-25)
+  await DeviceInfoService.getDeviceFingerprint();
+
   final apiClient = ApiClient();
   final authRepo = AuthRepository(apiClient);
 
@@ -58,6 +63,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => StoreSettingsProvider(apiClient)),
         ChangeNotifierProvider(create: (_) => SuppliersProvider(apiClient)),
         ChangeNotifierProvider(create: (_) => PurchasesProvider(apiClient)),
+        ChangeNotifierProvider(create: (_) => SyncProvider(apiClient)),
       ],
       child: const MuqawatiApp(),
     ),

@@ -33,11 +33,13 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly audit: AuditService,
     private readonly chartOfAccounts: ChartOfAccountsService,
-  ) {}
+  ) { }
 
   // ─── تسجيل مالك متجر جديد (USER_FLOWS 1) ────────────────────────────────
 
   async registerStoreOwner(dto: RegisterStoreOwnerDto, ip?: string) {
+    this.validateDeviceFingerprint(dto.deviceFingerprint);
+
     if (dto.password !== dto.passwordConfirmation) {
       throw ApiError.badRequest('VALIDATION_ERROR', 'كلمتا المرور غير متطابقتين.');
     }
@@ -64,9 +66,10 @@ export class AuthService {
         ipAddress: ip,
         deviceInfo: dto.deviceFingerprint,
       });
+      const contactPhone = await this.getContactPhone();
       throw ApiError.forbidden(
         'DEVICE_TRIAL_ALREADY_CONSUMED',
-        'هذا الجهاز لا يستحق تجربة جديدة، تواصل مع 735717710.',
+        `هذا الجهاز لا يستحق تجربة جديدة، تواصل مع ${contactPhone}.`,
       );
     }
 
@@ -120,12 +123,41 @@ export class AuthService {
       { userId: owner.id, role: 'STORE_OWNER', storeOwnerId: owner.id },
       dto.deviceFingerprint,
     );
-    return { account: { id: owner.id, full_name: owner.fullName, status: owner.status }, ...tokens };
+    return {
+      role: 'STORE_OWNER' as const,
+      account_status: owner.status,
+      account: {
+        id: owner.id,
+        full_name: owner.fullName,
+        store_name: owner.storeName,
+        phone: owner.phone,
+        status: owner.status,
+        trial_sales_used: owner.trialSalesUsed,
+        trial_sales_limit: owner.trialSalesLimit,
+        allow_responsible_purchases: owner.allowResponsiblePurchases,
+      },
+      user: {
+        id: owner.id,
+        storeOwnerId: owner.id,
+        name: owner.fullName,
+        storeName: owner.storeName,
+        phone: owner.phone,
+        role: 'STORE_OWNER',
+        accountStatus: owner.status,
+        isResponsibleWorker: false,
+        allowResponsiblePurchases: owner.allowResponsiblePurchases,
+        trialSalesUsed: owner.trialSalesUsed,
+        trialSalesLimit: owner.trialSalesLimit,
+      },
+      ...tokens,
+    };
   }
 
   // ─── تسجيل الدخول (USER_FLOWS 2 — الفحص موحّد: المالك أولاً ثم العامل) ──
 
   async login(dto: LoginDto, ip?: string) {
+    this.validateDeviceFingerprint(dto.deviceFingerprint);
+
     // 0) فحص حظر الجهاز مباشرة من قاعدة البيانات
     const existingDevice = await this.prisma.device.findUnique({
       where: { deviceFingerprint: dto.deviceFingerprint },
@@ -148,9 +180,9 @@ export class AuthService {
     const worker = owner
       ? null
       : await this.prisma.worker.findUnique({
-          where: { phone: dto.phone },
-          include: { storeOwner: true },
-        });
+        where: { phone: dto.phone },
+        include: { storeOwner: true },
+      });
 
     if (!owner && !worker) {
       throw this.invalidCredentials(ip, dto.deviceFingerprint);
@@ -197,7 +229,15 @@ export class AuthService {
         ipAddress: ip,
         deviceInfo: dto.deviceFingerprint,
       });
-      throw ApiError.locked(reason, LOCKED_OWNER_STATUSES[parentStatus as 'TRIAL_EXPIRED']);
+      const { phone, whatsapp } = await this.getSupportContacts();
+      const lockedMsg = await this.getLockedOwnerMessage(
+        parentStatus as 'TRIAL_EXPIRED' | 'EXPIRED' | 'SUSPENDED',
+        phone,
+      );
+      throw ApiError.locked(reason, lockedMsg, {
+        contact_phone: phone,
+        contact_whatsapp: whatsapp,
+      });
     }
 
     // 3) حالة العامل: موقوف؟ — 423 ACCOUNT_LOCKED (reason=WORKER_SUSPENDED)
@@ -213,14 +253,42 @@ export class AuthService {
         ipAddress: ip,
         deviceInfo: dto.deviceFingerprint,
       });
+      const { phone, whatsapp } = await this.getSupportContacts();
       throw ApiError.locked(
         'WORKER_SUSPENDED',
-        'الحساب موقوف مؤقتاً. تواصل مع المالك لإعادة تفعيله.',
+        `الحساب موقوف مؤقتاً. تواصل مع المالك لإعادة تفعيله. للتواصل والدعم: ${phone}`,
+        {
+          contact_phone: phone,
+          contact_whatsapp: whatsapp,
+        },
       );
     }
 
     // 4) دخول بكلمة مرور احتياطية → توجيه إلزامي لشاشة SET_NEW_PASSWORD (R-32)
     if (tempPasswordUsed) {
+      // ختم أحدث سجل TempPasswordAudit للمالك كـ مستخدم (usedAt)
+      const latestAudit = await this.prisma.tempPasswordAudit.findFirst({
+        where: { storeOwnerId: owner!.id, usedAt: null },
+        orderBy: { generatedAt: 'desc' },
+      });
+      if (latestAudit) {
+        await this.prisma.tempPasswordAudit.update({
+          where: { id: latestAudit.id },
+          data: { usedAt: new Date() },
+        });
+      }
+
+      // تسجيل وتحديث ظهور الجهاز
+      await this.prisma.device.upsert({
+        where: { deviceFingerprint: dto.deviceFingerprint },
+        create: {
+          deviceFingerprint: dto.deviceFingerprint,
+          storeOwnerId: owner!.id,
+          lastSeenAt: new Date(),
+        },
+        update: { lastSeenAt: new Date() },
+      });
+
       const tempToken = await this.jwt.signAsync(
         { sub: owner!.id, role: 'STORE_OWNER', storeOwnerId: owner!.id, scope: 'set-new-password' },
         { expiresIn: '10m' },
@@ -257,12 +325,12 @@ export class AuthService {
 
     const user: AuthenticatedUser = worker
       ? {
-          userId: worker.id,
-          role: 'WORKER',
-          storeOwnerId: worker.storeOwnerId,
-          workerId: worker.id,
-          isResponsible: worker.isResponsible,
-        }
+        userId: worker.id,
+        role: 'WORKER',
+        storeOwnerId: worker.storeOwnerId,
+        workerId: worker.id,
+        isResponsible: worker.isResponsible,
+      }
       : { userId: owner!.id, role: 'STORE_OWNER', storeOwnerId: owner!.id };
 
     const tokens = await this.issueTokens(user, dto.deviceFingerprint);
@@ -284,47 +352,52 @@ export class AuthService {
       account_status: worker ? worker.status : owner!.status,
       user: worker
         ? {
-            id: worker.id,
-            storeOwnerId: worker.storeOwnerId,
-            name: worker.fullName,
-            storeName: worker.storeOwner.storeName,
-            phone: worker.phone,
-            role: 'WORKER',
-            accountStatus: worker.storeOwner.status,
-            isResponsibleWorker: worker.isResponsible,
-            allowResponsiblePurchases: worker.isResponsible
-              ? worker.storeOwner.allowResponsiblePurchases
-              : false,
-            trialSalesUsed: worker.storeOwner.trialSalesUsed,
-            trialSalesLimit: worker.storeOwner.trialSalesLimit,
-            permissions: {
-              showCostPrice: worker.permShowCostPrice,
-              showSellPricesInventory: worker.permShowSellPricesInventory,
-              damagedGoodsEntry: worker.permDamagedGoodsEntry,
-              reportsAccess: worker.permReportsAccess,
-              enterOwnAdvance: worker.permEnterOwnAdvance,
-              editWorkerClosingCash: worker.permEditWorkerClosingCash,
-            },
-          }
-        : {
-            id: owner!.id,
-            storeOwnerId: owner!.id,
-            name: owner!.fullName,
-            storeName: owner!.storeName,
-            phone: owner!.phone,
-            role: 'STORE_OWNER',
-            accountStatus: owner!.status,
-            isResponsibleWorker: false,
-            allowResponsiblePurchases: owner!.allowResponsiblePurchases,
-            trialSalesUsed: owner!.trialSalesUsed,
-            trialSalesLimit: owner!.trialSalesLimit,
+          id: worker.id,
+          storeOwnerId: worker.storeOwnerId,
+          name: worker.fullName,
+          storeName: worker.storeOwner.storeName,
+          phone: worker.phone,
+          role: 'WORKER',
+          accountStatus: worker.storeOwner.status,
+          isResponsibleWorker: worker.isResponsible,
+          allowResponsiblePurchases: worker.isResponsible
+            ? worker.storeOwner.allowResponsiblePurchases
+            : false,
+          trialSalesUsed: worker.storeOwner.trialSalesUsed,
+          trialSalesLimit: worker.storeOwner.trialSalesLimit,
+          permissions: {
+            showCostPrice: worker.permShowCostPrice,
+            showSellPricesInventory: worker.permShowSellPricesInventory,
+            damagedGoodsEntry: worker.permDamagedGoodsEntry,
+            reportsAccess: worker.permReportsAccess,
+            enterOwnAdvance: worker.permEnterOwnAdvance,
+            editWorkerClosingCash: worker.permEditWorkerClosingCash,
           },
+        }
+        : {
+          id: owner!.id,
+          storeOwnerId: owner!.id,
+          name: owner!.fullName,
+          storeName: owner!.storeName,
+          phone: owner!.phone,
+          role: 'STORE_OWNER',
+          accountStatus: owner!.status,
+          isResponsibleWorker: false,
+          allowResponsiblePurchases: owner!.allowResponsiblePurchases,
+          trialSalesUsed: owner!.trialSalesUsed,
+          trialSalesLimit: owner!.trialSalesLimit,
+        },
     };
   }
 
   // ─── إكمال تدفق كلمة المرور المؤقتة (R-32) ──────────────────────────────
 
-  async setNewPassword(dto: SetNewPasswordDto, user: AuthenticatedUser, ip?: string) {
+  async setNewPassword(
+    dto: SetNewPasswordDto,
+    user: AuthenticatedUser,
+    ip?: string,
+    deviceFingerprint?: string,
+  ) {
     if (user.scope !== 'set-new-password' || user.role !== 'STORE_OWNER') {
       throw ApiError.forbidden('PERMISSION_DENIED', 'هذا التوكن محدود الغرض ولا يصلح لهذا الإجراء.');
     }
@@ -333,15 +406,35 @@ export class AuthService {
     }
 
     const passwordHash = await hash(dto.newPassword);
-    const owner = await this.prisma.storeOwner.update({
-      where: { id: user.userId },
-      data: {
-        passwordHash,
-        tempPasswordHash: null,
-        tempPasswordGeneratedAt: null,
-        mustChangePassword: false,
-      },
+    const now = new Date();
+
+    const owner = await this.prisma.$transaction(async (tx) => {
+      // 1) تحديث كلمة مرور المالك وتصفير المؤقتة
+      const updatedOwner = await tx.storeOwner.update({
+        where: { id: user.userId },
+        data: {
+          passwordHash,
+          tempPasswordHash: null,
+          tempPasswordGeneratedAt: null,
+          mustChangePassword: false,
+        },
+      });
+
+      // 2) ختم كافة سجلات كلمات المرور المؤقتة المفتوحة كـ مستخدمة
+      await tx.tempPasswordAudit.updateMany({
+        where: { storeOwnerId: user.userId, usedAt: null },
+        data: { usedAt: now },
+      });
+
+      // 3) إلغاء كافة جلسات التحديث القديمة للمالك لضمان الأمان
+      await tx.refreshSession.updateMany({
+        where: { userId: user.userId, userType: 'STORE_OWNER', revokedAt: null },
+        data: { revokedAt: now },
+      });
+
+      return updatedOwner;
     });
+
     await this.audit.log({
       actorType: 'STORE_OWNER',
       actorId: owner.id,
@@ -352,11 +445,39 @@ export class AuthService {
       ipAddress: ip,
     });
 
+    // استخراج بصمة الجهاز الممررة أو أحدث جهاز نشط للمالك لربطه بجلسة التحديث الجديدة
+    let effectiveFingerprint = deviceFingerprint;
+    if (!effectiveFingerprint) {
+      const latestDevice = await this.prisma.device.findFirst({
+        where: { storeOwnerId: owner.id },
+        orderBy: { lastSeenAt: 'desc' },
+        select: { deviceFingerprint: true },
+      });
+      effectiveFingerprint = latestDevice?.deviceFingerprint;
+    }
+
     const tokens = await this.issueTokens(
       { userId: owner.id, role: 'STORE_OWNER', storeOwnerId: owner.id },
-      undefined,
+      effectiveFingerprint,
     );
-    return tokens;
+    return {
+      ...tokens,
+      role: 'STORE_OWNER' as const,
+      account_status: owner.status,
+      user: {
+        id: owner.id,
+        storeOwnerId: owner.id,
+        name: owner.fullName,
+        storeName: owner.storeName,
+        phone: owner.phone,
+        role: 'STORE_OWNER',
+        accountStatus: owner.status,
+        isResponsibleWorker: false,
+        allowResponsiblePurchases: owner.allowResponsiblePurchases,
+        trialSalesUsed: owner.trialSalesUsed,
+        trialSalesLimit: owner.trialSalesLimit,
+      },
+    };
   }
 
   // ─── تدوير refresh_token (13-auth §1.4 Rotation) ────────────────────────
@@ -441,7 +562,7 @@ export class AuthService {
       });
       enrollment = {
         secret,
-        otpauth_url: authenticator.keyuri(admin.phone, 'Maqouti Admin Portal', secret),
+        otpauth_url: authenticator.keyuri(admin.phone, 'Maquaty Admin Portal', secret),
       };
       await this.audit.log({
         actorType: 'PLATFORM_ADMIN',
@@ -576,7 +697,44 @@ export class AuthService {
     });
     const raw: unknown = setting?.value;
     const value = typeof raw === 'object' && raw !== null ? (raw as { v?: unknown }).v : raw;
-    return typeof value === 'number' ? value : 100;
+    return typeof value === 'number' ? value : 50;
+  }
+
+  private async getSystemTextSetting(key: string, fallback: string): Promise<string> {
+    try {
+      const setting = await this.prisma.systemSetting?.findUnique({ where: { key } });
+      const raw: unknown = setting?.value;
+      const value = typeof raw === 'object' && raw !== null && 'v' in raw ? (raw as { v?: unknown }).v : raw;
+      return typeof value === 'string' && value.trim() !== '' ? value.trim() : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private async getContactPhone(): Promise<string> {
+    return this.getSystemTextSetting('contact_phone', '735717710');
+  }
+
+  private async getSupportContacts(): Promise<{ phone: string; whatsapp: string }> {
+    const phone = await this.getSystemTextSetting('contact_phone', '735717710');
+    const whatsapp = await this.getSystemTextSetting('contact_whatsapp', phone);
+    return { phone, whatsapp };
+  }
+
+  private async getLockedOwnerMessage(
+    status: 'TRIAL_EXPIRED' | 'EXPIRED' | 'SUSPENDED',
+    phone?: string,
+  ): Promise<string> {
+    const keyMap: Record<'TRIAL_EXPIRED' | 'EXPIRED' | 'SUSPENDED', string> = {
+      TRIAL_EXPIRED: 'trial_expired_message',
+      EXPIRED: 'subscription_expired_message',
+      SUSPENDED: 'suspended_message',
+    };
+    let msg = await this.getSystemTextSetting(keyMap[status], LOCKED_OWNER_STATUSES[status]);
+    if (phone && !/\d{7,15}/.test(msg)) {
+      msg = `${msg} للتواصل والدعم: ${phone}`;
+    }
+    return msg;
   }
 
   private tokenPayload(user: AuthenticatedUser) {
@@ -656,5 +814,18 @@ export class AuthService {
   // مولّد كلمة المرور الاحتياطية المؤقتة (يُستخدم لاحقاً في Admin Portal — R-32)
   generateTempPassword(): string {
     return randomBytes(6).toString('base64url').slice(0, 10) + randomInt(10, 99).toString();
+  }
+
+  private validateDeviceFingerprint(fingerprint: string | undefined): void {
+    if (
+      !fingerprint ||
+      fingerprint.trim() === 'APP-DEVICE-DEFAULT' ||
+      fingerprint.trim().length < 8
+    ) {
+      throw ApiError.badRequest(
+        'INVALID_DEVICE_FINGERPRINT',
+        'بصمة الجهاز غير صالحة أو غير مسموح بها. يجب ألا تقل عن 8 خانات وألا تكون قيمة عامة افتراضية.',
+      );
+    }
   }
 }

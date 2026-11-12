@@ -5,6 +5,7 @@ import '../../core/network/api_client.dart';
 class DailyClosingData {
   final String id;
   final String closingDate;
+  final String? workerId;
   final String status;
   final double openingCash;
   final double expectedCash;
@@ -16,6 +17,7 @@ class DailyClosingData {
   DailyClosingData({
     required this.id,
     required this.closingDate,
+    this.workerId,
     required this.status,
     this.openingCash = 0.0,
     required this.expectedCash,
@@ -32,6 +34,7 @@ class DailyClosingData {
     return DailyClosingData(
       id: (json['closing_id'] ?? json['id'] ?? '').toString(),
       closingDate: rawDate.length >= 10 ? rawDate.substring(0, 10) : rawDate,
+      workerId: json['worker_id']?.toString(),
       status: (json['status'] ?? 'OPEN').toString(),
       openingCash: (json['opening_cash'] as num?)?.toDouble() ?? 0.0,
       expectedCash: (json['expected_cash'] as num?)?.toDouble() ?? 0.0,
@@ -80,8 +83,11 @@ class DailyClosingProvider with ChangeNotifier {
     }
   }
 
-  Future<bool> updateActualCash(double actualCash) async {
+  Future<bool> updateActualCash(double actualCash, {String? workerId}) async {
     if (_closing == null) return false;
+    if (workerId != null && workerId.isNotEmpty) {
+      return updateWorkerCash(workerId, actualCash);
+    }
     _isLoading = true;
     _errorMessage = null;
     notifyListeners();
@@ -103,7 +109,23 @@ class DailyClosingProvider with ChangeNotifier {
 
   Future<bool> updateWorkerCash(String workerId, double actualCash) async {
     if (_closing == null) return false;
-    return updateActualCash(actualCash);
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      await _api.patch(
+        ApiEndpoints.dailyClosingWorkerCash(_closing!.id, workerId),
+        data: {'actualCash': actualCash},
+      );
+      await fetchTodayClosing(workerId: workerId);
+      return true;
+    } catch (e) {
+      _errorMessage = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
   }
 
   Future<bool> approveClosing({double? ownerActualCash}) async {

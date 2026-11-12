@@ -14,7 +14,7 @@ import { SetNewPasswordDto } from './dto/set-new-password.dto';
 @Controller('auth')
 @UseFilters(ApiExceptionFilter)
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(private readonly auth: AuthService) { }
 
   @Public()
   @Post('register-store-owner')
@@ -33,7 +33,10 @@ export class AuthController {
   @Post('set-new-password')
   @HttpCode(200)
   setNewPassword(@Body() dto: SetNewPasswordDto, @Ip() ip: string, @Req() req: Request) {
-    return this.auth.setNewPassword(dto, getRequestUser(req), ip);
+    const rawFp = req.headers['x-device-fingerprint'];
+    const deviceFingerprint =
+      typeof rawFp === 'string' && rawFp.trim() ? rawFp.trim() : undefined;
+    return this.auth.setNewPassword(dto, getRequestUser(req), ip, deviceFingerprint);
   }
 
   @Public()

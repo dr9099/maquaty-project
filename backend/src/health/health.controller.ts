@@ -12,7 +12,7 @@ export class HealthController {
   check() {
     return {
       status: 'ok',
-      service: 'maqouti-backend',
+      service: 'maquaty-backend',
       timestamp: new Date().toISOString(),
       uptime_seconds: Math.round(process.uptime()),
     };

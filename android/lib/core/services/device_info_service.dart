@@ -12,18 +12,45 @@ class DeviceInfoService {
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
   static final DeviceInfoPlugin _deviceInfoPlugin = DeviceInfoPlugin();
   static String? _cachedFingerprint;
+  static Future<String>? _pendingFuture;
+
+  /// التحقق من صلاحية وتفرد البصمة وعدم كونها قيمة افتراضية عامة
+  static bool _isValidFingerprint(String? fp) {
+    if (fp == null) return false;
+    final trimmed = fp.trim();
+    if (trimmed.isEmpty || trimmed == 'APP-DEVICE-DEFAULT' || trimmed.length < 8) {
+      return false;
+    }
+    return true;
+  }
 
   /// الحصول على بصمة الجهاز الفريدة (من الذاكرة، ثم التخزين الآمن، أو توليدها وحفظها)
   static Future<String> getDeviceFingerprint() async {
-    if (_cachedFingerprint != null && _cachedFingerprint!.isNotEmpty) {
+    if (_isValidFingerprint(_cachedFingerprint)) {
+      return _cachedFingerprint!;
+    }
+    if (_pendingFuture != null) {
+      return _pendingFuture!;
+    }
+
+    _pendingFuture = _resolveFingerprint();
+    try {
+      return await _pendingFuture!;
+    } finally {
+      _pendingFuture = null;
+    }
+  }
+
+  static Future<String> _resolveFingerprint() async {
+    if (_isValidFingerprint(_cachedFingerprint)) {
       return _cachedFingerprint!;
     }
 
     // 1) محاولة القراءة من التخزين الآمن
     try {
       final saved = await _secureStorage.read(key: _storageKey);
-      if (saved != null && saved.trim().isNotEmpty) {
-        _cachedFingerprint = saved.trim();
+      if (_isValidFingerprint(saved)) {
+        _cachedFingerprint = saved!.trim();
         return _cachedFingerprint!;
       }
     } catch (_) {}
@@ -32,8 +59,8 @@ class DeviceInfoService {
     try {
       final prefs = await SharedPreferences.getInstance();
       final saved = prefs.getString(_storageKey);
-      if (saved != null && saved.trim().isNotEmpty) {
-        _cachedFingerprint = saved.trim();
+      if (_isValidFingerprint(saved)) {
+        _cachedFingerprint = saved!.trim();
         try {
           await _secureStorage.write(key: _storageKey, value: _cachedFingerprint);
         } catch (_) {}
@@ -63,7 +90,8 @@ class DeviceInfoService {
       rawId = 'DEV_${const Uuid().v4()}';
     }
 
-    if (rawId.isEmpty) {
+    // ضمان التفرد ومنع القيم العامة أو القصيرة: توليد UUID v4 فريد دائماً
+    if (!_isValidFingerprint(rawId)) {
       rawId = 'DEV_${const Uuid().v4()}';
     }
 
@@ -82,3 +110,4 @@ class DeviceInfoService {
     return _cachedFingerprint!;
   }
 }
+

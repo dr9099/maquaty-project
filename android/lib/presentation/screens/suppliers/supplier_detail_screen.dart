@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/error_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/store_settings_provider.dart';
 import '../../providers/suppliers_provider.dart';
@@ -96,7 +97,7 @@ class _SupplierDetailScreenState extends State<SupplierDetailScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(backgroundColor: AppColors.lossRed, content: Text('تعذر تصدير CSV: $e')),
+        SnackBar(backgroundColor: AppColors.lossRed, content: Text('تعذر تصدير CSV: ${formatUserError(e)}')),
       );
     }
   }
@@ -158,7 +159,7 @@ class _SupplierDetailScreenState extends State<SupplierDetailScreen> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(backgroundColor: AppColors.lossRed, content: Text('تعذر تصدير PDF: $e')),
+        SnackBar(backgroundColor: AppColors.lossRed, content: Text('تعذر تصدير PDF: ${formatUserError(e)}')),
       );
     }
   }
@@ -517,7 +518,7 @@ class _SupplierDetailScreenState extends State<SupplierDetailScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'أعمار الديون المستحقة (Aging)',
+                              'أعمار الديون المستحقة',
                               style: TextStyle(
                                 fontWeight: FontWeight.bold,
                                 fontSize: 13,

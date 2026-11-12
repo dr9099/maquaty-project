@@ -15,12 +15,12 @@ case "$1" in
       echo "قاعدة البيانات مهيأة مسبقاً ($PGDATA)."
       exit 0
     fi
-    echo "maqouti" > .pgpass_tmp
-    "$PG_BIN/initdb.exe" -D "$PGDATA" -U maqouti --pwfile=.pgpass_tmp -E UTF8 --locale=C > /dev/null
+    echo "maquaty" > .pgpass_tmp
+    "$PG_BIN/initdb.exe" -D "$PGDATA" -U maquaty --pwfile=.pgpass_tmp -E UTF8 --locale=C > /dev/null
     rm .pgpass_tmp
     echo "port = $PGPORT" >> "$PGDATA/postgresql.conf"
     echo "listen_addresses = '127.0.0.1'" >> "$PGDATA/postgresql.conf"
-    echo "تمت التهيئة في $PGDATA على المنفذ $PGPORT (ابدأها بـ start ثم npx prisma migrate dev ينشئ قاعدة maqouti)"
+    echo "تمت التهيئة في $PGDATA على المنفذ $PGPORT (ابدأها بـ start ثم npx prisma migrate dev ينشئ قاعدة maquaty)"
     ;;
   start)
     "$PG_BIN/pg_ctl.exe" -D "$PGDATA" -l "$PGDATA/server.log" start

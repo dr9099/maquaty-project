@@ -21,6 +21,30 @@ export class DamagedGoodsService {
   async record(user: AuthenticatedUser, dto: RecordDamagedGoodsDto, ip?: string) {
     const storeOwnerId = user.storeOwnerId!;
 
+    const isUuid = (val?: string) =>
+      typeof val === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const candidateDamageId = isUuid(dto.id) ? dto.id : isUuid(dto.clientOpId) ? dto.clientOpId : undefined;
+
+    if (candidateDamageId) {
+      const existingDamage = await this.prisma.damagedGood.findFirst({
+        where: { id: candidateDamageId, storeOwnerId },
+        include: { item: { select: { unit: true } } },
+      });
+      if (existingDamage) {
+        return {
+          id: existingDamage.id,
+          item_id: existingDamage.itemId,
+          quantity: Number(existingDamage.quantity),
+          quantity_display: formatQuantityDisplay(existingDamage.quantity, existingDamage.item?.unit),
+          is_damaged: existingDamage.isDamaged,
+          reason: existingDamage.reason,
+          photo_url: existingDamage.photoUrl,
+          recorded_at: existingDamage.recordedAt,
+        };
+      }
+    }
+
     // 1) فحص صلاحية العامل (BR-016)
     if (user.role === 'WORKER') {
       const worker = await this.prisma.worker.findUniqueOrThrow({
@@ -68,13 +92,14 @@ export class DamagedGoodsService {
       }
 
       // خصم الكمية من المخزون فوراً (BR-013)
-      await tx.$executeRaw(
-        Prisma.sql`UPDATE items SET quantity = quantity - ${requestedQuantity}, updated_at = now()
-                   WHERE id = ${dto.itemId}::uuid`,
-      );
+      await tx.item.update({
+        where: { id: dto.itemId },
+        data: { quantity: { decrement: requestedQuantity } },
+      });
 
       const created = await tx.damagedGood.create({
         data: {
+          ...(candidateDamageId ? { id: candidateDamageId } : {}),
           storeOwnerId,
           workerId: user.role === 'WORKER' ? user.workerId : null,
           itemId: dto.itemId,

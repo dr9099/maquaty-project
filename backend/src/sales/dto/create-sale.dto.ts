@@ -2,6 +2,18 @@ import { IsBoolean, IsEnum, IsIn, IsNotEmpty, IsNumber, IsOptional, IsPositive, 
 import { PaymentType } from '@prisma/client';
 
 export class CreateSaleDto {
+  @IsOptional()
+  @IsUUID(undefined, { message: 'معرّف عملية البيع غير صالح.' })
+  id?: string;
+
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
+
+  @IsOptional()
+  @IsString()
+  soldAt?: string;
+
   @IsUUID(undefined, { message: 'معرّف الصنف غير صالح.' })
   itemId!: string;
 

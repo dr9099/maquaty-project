@@ -10,6 +10,28 @@ class AccountLockedScreen extends StatelessWidget {
   const AccountLockedScreen({super.key, this.lockReason});
 
   static const String supportPhone = '735717710';
+  static const MethodChannel _channel = MethodChannel('com.kareemtech.maquaty/whatsapp');
+
+  static String extractSupportPhone(String text) {
+    final match = RegExp(r'\b\d{7,15}\b').firstMatch(text);
+    return match?.group(0) ?? supportPhone;
+  }
+
+  static Future<void> launchWhatsApp(BuildContext context, String phone) async {
+    bool opened = false;
+    try {
+      final res = await _channel.invokeMethod<bool>('launchWhatsApp', {'phone': phone});
+      opened = res == true;
+    } catch (_) {
+      opened = false;
+    }
+    if (!opened && context.mounted) {
+      Clipboard.setData(ClipboardData(text: phone));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('تم نسخ رقم الدعم الفني للتواصل عبر واتساب: $phone')),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -17,6 +39,10 @@ class AccountLockedScreen extends StatelessWidget {
     final reasonText = lockReason ??
         auth.lockReason ??
         'انتهت فترة التجربة المجانية لمتجرك. للاستمرار في استخدام مَقوتي وحفظ كافة بياناتك ومبيعاتك، يرجى الاشتراك وتجديد الحساب.';
+    final dynamicPhone = auth.supportPhone;
+    final activePhone = (dynamicPhone.isNotEmpty && dynamicPhone != supportPhone)
+        ? dynamicPhone
+        : extractSupportPhone(reasonText);
 
     return Directionality(
       textDirection: TextDirection.rtl,
@@ -82,9 +108,9 @@ class AccountLockedScreen extends StatelessWidget {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Text(
-                              supportPhone,
-                              style: TextStyle(
+                            Text(
+                              activePhone,
+                              style: const TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
                                 color: AppColors.primary,
@@ -96,7 +122,7 @@ class AccountLockedScreen extends StatelessWidget {
                               icon: const Icon(Icons.copy, size: 20, color: AppColors.primary),
                               tooltip: 'نسخ الرقم',
                               onPressed: () {
-                                Clipboard.setData(const ClipboardData(text: supportPhone));
+                                Clipboard.setData(ClipboardData(text: activePhone));
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(content: Text('تم نسخ رقم الدعم بنجاح ✅')),
                                 );
@@ -117,11 +143,7 @@ class AccountLockedScreen extends StatelessWidget {
                     ),
                     icon: const Icon(Icons.chat_outlined),
                     label: const Text('تواصل عبر واتساب'),
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('فتح محادثة واتساب مع الدعم الفني: 735717710')),
-                      );
-                    },
+                    onPressed: () => launchWhatsApp(context, activePhone),
                   ),
                   const SizedBox(height: 12),
 

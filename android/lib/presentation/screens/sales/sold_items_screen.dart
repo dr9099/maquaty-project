@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/sales_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// شاشة المباع لليوم المحدد — الشاشة 7 (SOLD_ITEMS / 07-sold-items.jpg)
@@ -28,6 +29,7 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
   @override
   Widget build(BuildContext context) {
     final salesProvider = context.watch<SalesProvider>();
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
     final sales = salesProvider.todaySales;
 
     // تجميع المباع لكل صنف
@@ -35,7 +37,7 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
     double totalAmount = 0.0;
     double totalQuantity = 0.0;
 
-    for (var s in sales) {
+    for (var s in sales.where((x) => x.type == 'SALE')) {
       totalAmount += s.amount;
       totalQuantity += s.quantity;
       if (!grouped.containsKey(s.itemName)) {
@@ -81,7 +83,7 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
                     const Text('إجمالي القيمة المالية', style: TextStyle(color: AppColors.surfaceMuted, fontSize: 12)),
                     const SizedBox(height: 4),
                     Text(
-                      '${_currencyFormat.format(totalAmount)} ريال',
+                      '${_currencyFormat.format(totalAmount)} $symbol',
                       style: const TextStyle(color: AppColors.secondary, fontSize: 18, fontWeight: FontWeight.bold),
                     ),
                   ],
@@ -122,7 +124,7 @@ class _SoldItemsScreenState extends State<SoldItemsScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.end,
                                   children: [
                                     Text(
-                                      '${_currencyFormat.format(item.totalAmount)} ريال',
+                                      '${_currencyFormat.format(item.totalAmount)} $symbol',
                                       style: const TextStyle(
                                         fontWeight: FontWeight.bold,
                                         fontSize: 14,

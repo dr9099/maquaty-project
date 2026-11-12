@@ -197,6 +197,9 @@ export class WorkerService implements OnModuleInit, OnModuleDestroy {
       where: {
         status: 'ACTIVE',
         expiresAt: { lte: now },
+        storeOwner: {
+          status: { not: 'SUSPENDED' }, // تجميد عداد الاشتراك أثناء الإيقاف الإداري لضمان حق التعويض (R-52 / D-07)
+        },
       },
       include: {
         storeOwner: {

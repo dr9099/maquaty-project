@@ -1,5 +1,13 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
+
+// تحويل BigInt و Decimal لـ JSON بأمان في أي سياق يستدعي Prisma
+(BigInt.prototype as any).toJSON = function () {
+  return Number(this);
+};
+(Prisma.Decimal.prototype as any).toJSON = function () {
+  return this.toNumber();
+};
 
 // طبقة الوصول الوحيدة لقاعدة البيانات — كل استعلام يمر من هنا
 @Injectable()

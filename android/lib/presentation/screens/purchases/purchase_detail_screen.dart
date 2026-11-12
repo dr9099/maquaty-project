@@ -33,7 +33,11 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final inv = await context.read<PurchasesProvider>().fetchPurchaseById(widget.invoiceId);
+    final storeOwnerId = context.read<AuthProvider>().storeOwnerId;
+    final inv = await context.read<PurchasesProvider>().fetchPurchaseById(
+          widget.invoiceId,
+          storeOwnerId: storeOwnerId,
+        );
     if (!mounted) return;
     setState(() {
       _invoice = inv;
@@ -150,9 +154,13 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
     }
   }
 
+  String _formatDecimalQty(double value) {
+    return value.toStringAsFixed(3).replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+
   void _showReturnModal(PurchaseInvoiceModel inv, PurchaseItemModel line) {
     final qtyCtrl = TextEditingController(
-      text: line.remainingReturnableQty.toStringAsFixed(0),
+      text: _formatDecimalQty(line.remainingReturnableQty),
     );
     final reasonCtrl = TextEditingController();
     String refundMethod = inv.remainingAmount > 0 ? 'DEBT_REDUCTION' : 'CASH_REFUND';
@@ -243,7 +251,7 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                       decoration: InputDecoration(
                         labelText: returnUnit == 'GRAM'
                             ? 'الكمية المرتجعة بالجرام (جم)'
-                            : 'الكمية المرتجعة بـ (${line.unit}) — المتاح: ${line.remainingReturnableQty}',
+                            : 'الكمية المرتجعة بـ (${line.unit}) — المتاح: ${_formatDecimalQty(line.remainingReturnableQty)}',
                         helperText: isKilo && qtyCtrl.text.isNotEmpty
                             ? '= ${formatQuantityDisplay(returnUnit == "GRAM" ? (double.tryParse(qtyCtrl.text) ?? 0.0) * 0.001 : (double.tryParse(qtyCtrl.text) ?? 0.0), unit: "كيلو")}'
                             : null,
@@ -304,12 +312,14 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                           quantityUnit: isKilo && returnUnit == 'GRAM' ? 'GRAM' : 'KILO',
                           refundMethod: refundMethod,
                           reason: reasonCtrl.text,
-                          storeOwnerId: context.read<AuthProvider>().currentAccount?.id,
+                          storeOwnerId: context.read<AuthProvider>().storeOwnerId,
                         );
                         if (!mounted) return;
                         if (ok) {
                           if (ctx.mounted) Navigator.pop(ctx);
-                          await invProv.fetchInventory();
+                          await invProv.fetchInventory(
+                            storeOwnerId: context.read<AuthProvider>().storeOwnerId,
+                          );
                           if (!mounted) return;
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(content: Text('تم تسجيل مرتجع المشتريات بنجاح ✅')),
@@ -501,7 +511,7 @@ class _PurchaseDetailScreenState extends State<PurchaseDetailScreen> {
                                   ),
                                 if (inv.isPosted && line.remainingReturnableQty > 0)
                                   Align(
-                                    alignment: Alignment.centerLeft,
+                                    alignment: AlignmentDirectional.centerEnd,
                                     child: TextButton.icon(
                                       onPressed: () => _showReturnModal(inv, line),
                                       icon: const Icon(Icons.assignment_return_outlined, size: 16),

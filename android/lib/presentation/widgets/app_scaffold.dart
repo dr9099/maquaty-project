@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants/app_colors.dart';
 import '../providers/auth_provider.dart';
+import '../providers/sync_provider.dart';
 
 /// الهيكل الرئيسي لشاشات التطبيق مع فرض اتجاه RTL وقائمة جانبية وشريط تنقل سفلي مُفلترين حسب الدور
 class AppScaffold extends StatelessWidget {
@@ -35,9 +36,43 @@ class AppScaffold extends StatelessWidget {
             IconButton(
               tooltip: 'المزامنة',
               icon: const Icon(Icons.sync, size: 20),
-              onPressed: () {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('جاري المزامنة في الخلفية...')),
+              onPressed: () async {
+                final storeOwnerId = auth.currentAccount?.id ?? 'default';
+                final messenger = ScaffoldMessenger.of(context);
+                SyncProvider? syncProvider;
+                try {
+                  syncProvider = context.read<SyncProvider>();
+                } catch (_) {
+                  syncProvider = null;
+                }
+                if (syncProvider == null) {
+                  messenger.showSnackBar(
+                    const SnackBar(content: Text('جاري المزامنة في الخلفية...')),
+                  );
+                  return;
+                }
+                if (syncProvider.isSyncing) return;
+                messenger.showSnackBar(
+                  const SnackBar(
+                    content: Text('جاري المزامنة مع السيرفر...'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+                final res = await syncProvider.syncWithServer(
+                  storeOwnerId: storeOwnerId,
+                  onStatusUpdated: (newStatus) {
+                    auth.updateAccountStatus(newStatus);
+                  },
+                );
+                messenger.hideCurrentSnackBar();
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      res.success
+                          ? 'تمت المزامنة بنجاح (إصدار #${res.newSyncVersion}) ✅'
+                          : (res.errorMessage ?? 'تعذرت المزامنة حالياً.'),
+                    ),
+                  ),
                 );
               },
             ),
@@ -149,7 +184,8 @@ class AppScaffold extends StatelessWidget {
 
                   const Divider(),
                   _drawerItem(context, Icons.fact_check_outlined, 'المطابقة والإغلاق اليومي', '/daily-closing'),
-                  _drawerItem(context, Icons.cloud_sync_outlined, 'النسخ الاحتياطي', '/backup'),
+                  if (auth.canAccessBackup)
+                    _drawerItem(context, Icons.cloud_sync_outlined, 'النسخ الاحتياطي', '/backup'),
                 ],
               ),
             ),
@@ -238,7 +274,7 @@ class AppScaffold extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'تبديل الحسابات المحفوظة (R-35)',
+                'تبديل الحسابات المحفوظة',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppColors.primary),
               ),
               const SizedBox(height: 12),

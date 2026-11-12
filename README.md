@@ -44,7 +44,7 @@
 ## هيكل المشروع
 
 ```text
-maqouti-project/
+maquaty-project/
 ├── README.md
 ├── AGENT.md                   ← يُقرأ أولاً من قِبل أي وكيل ذكاء اصطناعي
 ├── docs/                      ← كل الوثائق الهندسية

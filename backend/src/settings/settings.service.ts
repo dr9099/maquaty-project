@@ -3,6 +3,7 @@ import { CostingMethod, Currency, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { AccountStatusGuard } from '../common/account-status.guard';
 import { AuthenticatedUser } from '../common/types';
 import { UpdateStoreSettingsDto } from './dto/settings.dto';
 
@@ -163,6 +164,8 @@ export class SettingsService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+
+    AccountStatusGuard.invalidateOwner(storeOwnerId);
 
     return this.getStoreSettings(user);
   }

@@ -1,5 +1,5 @@
 {
-  "name": "maqouti-backend",
+  "name": "maquaty-backend",
   "version": "0.1.0",
   "description": "مَقوتي — Central Backend Server (NestJS + PostgreSQL + Prisma)",
   "private": true,

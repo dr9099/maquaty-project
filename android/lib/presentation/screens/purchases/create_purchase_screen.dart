@@ -147,7 +147,7 @@ class _DraftLineControllers {
   final unitCtrl = TextEditingController(text: 'حبة');
   final baseUnitCtrl = TextEditingController(text: 'حبة');
   final factorCtrl = TextEditingController(text: '1');
-  final qtyCtrl = TextEditingController(text: '10');
+  final qtyCtrl = TextEditingController(text: '1');
   final costCtrl = TextEditingController();
   final sellCtrl = TextEditingController();
   final taxCtrl = TextEditingController(text: '0');
@@ -425,7 +425,9 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
       supplierNameForOffline: supName,
       supplierInvoiceRef: _supplierRefCtrl.text,
       paymentType: _paymentType,
-      walletId: _paymentType == 'ELECTRONIC' ? _selectedWalletId : null,
+      walletId: (_paymentType == 'ELECTRONIC' || _paymentType == 'PARTIAL')
+          ? _selectedWalletId
+          : null,
       taxAmount: headerTax,
       discountAmount: headerDiscount,
       paidAmount: paidAmt,
@@ -537,7 +539,18 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                               DropdownMenuItem(value: 'ELECTRONIC', child: Text('محفظة إلكترونية')),
                             ],
                             onChanged: (v) {
-                              if (v != null) setState(() => _paymentType = v);
+                              if (v != null) {
+                                setState(() {
+                                  _paymentType = v;
+                                  if (v == 'ELECTRONIC' &&
+                                      _selectedWalletId == null &&
+                                      _wallets.isNotEmpty) {
+                                    _selectedWalletId = _wallets.first['id']?.toString();
+                                  } else if (v == 'PARTIAL') {
+                                    _selectedWalletId = null;
+                                  }
+                                });
+                              }
                             },
                           ),
                         ),
@@ -574,6 +587,28 @@ class _CreatePurchaseScreenState extends State<CreatePurchaseScreen> {
                         decoration: InputDecoration(
                           labelText: 'المبلغ المدفوع الآن ($symbol) *',
                         ),
+                      ),
+                      const SizedBox(height: 10),
+                      DropdownButtonFormField<String?>(
+                        value: _wallets.any((w) => w['id']?.toString() == _selectedWalletId)
+                            ? _selectedWalletId
+                            : null,
+                        decoration: const InputDecoration(
+                          labelText: 'طريقة سداد الدفعة المقدمة',
+                        ),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                            value: null,
+                            child: Text('نقدي (من الصندوق)'),
+                          ),
+                          ..._wallets.map(
+                            (w) => DropdownMenuItem<String?>(
+                              value: w['id']?.toString(),
+                              child: Text('محفظة: ${w['name']?.toString() ?? 'محفظة'}'),
+                            ),
+                          ),
+                        ],
+                        onChanged: (v) => setState(() => _selectedWalletId = v),
                       ),
                     ],
                   ],

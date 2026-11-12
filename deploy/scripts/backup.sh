@@ -4,14 +4,14 @@ set -euo pipefail
 
 : "${DATABASE_URL:?DATABASE_URL مطلوب}"
 : "${BACKUP_PASSPHRASE:?BACKUP_PASSPHRASE مطلوب}"
-: "${RCLONE_REMOTE:?RCLONE_REMOTE مطلوب (مثال: r2:maqouti-backups)}"
+: "${RCLONE_REMOTE:?RCLONE_REMOTE مطلوب (مثال: r2:maquaty-backups)}"
 
 RETENTION="${BACKUP_RETENTION:-30d}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-DUMP="$WORK/maqouti-$STAMP.dump.gz"
+DUMP="$WORK/maquaty-$STAMP.dump.gz"
 ENC="$DUMP.gpg"
 
 echo "==> pg_dump: $STAMP"

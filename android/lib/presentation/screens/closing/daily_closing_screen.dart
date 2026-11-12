@@ -17,6 +17,7 @@ class DailyClosingScreen extends StatefulWidget {
 
 class _DailyClosingScreenState extends State<DailyClosingScreen> {
   final _currencyFormat = NumberFormat('#,##0.##', 'ar');
+  String? _selectedWorkerId;
 
   @override
   void initState() {
@@ -26,7 +27,11 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     });
   }
 
-  void _showActualCashDialog(double? currentActual, String symbol) {
+  void _showActualCashDialog(
+    double? currentActual,
+    String symbol, {
+    String? targetWorkerId,
+  }) {
     final controller = TextEditingController(
       text: currentActual != null ? currentActual.toStringAsFixed(0) : '',
     );
@@ -58,7 +63,7 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
                 if (cash == null || cash < 0) return;
                 Navigator.pop(ctx);
                 final prov = context.read<DailyClosingProvider>();
-                final ok = await prov.updateActualCash(cash);
+                final ok = await prov.updateActualCash(cash, workerId: targetWorkerId);
                 if (ok && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -92,6 +97,31 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
     final isClosed = data?.isClosed ?? false;
     final sum = data?.summary ?? const {};
 
+    final effectiveWorkerId = isOwner
+        ? _selectedWorkerId
+        : (_selectedWorkerId ?? data?.workerId ?? auth.workerId);
+
+    final String? dropdownValue;
+    if (data != null && data.workers.isNotEmpty) {
+      if (isOwner) {
+        final bool exists = effectiveWorkerId == null ||
+            data.workers.any((w) =>
+                (w is Map ? (w['id'] ?? '') : '').toString() == effectiveWorkerId);
+        dropdownValue = exists ? effectiveWorkerId : null;
+      } else {
+        final bool exists = effectiveWorkerId != null &&
+            data.workers.any((w) =>
+                (w is Map ? (w['id'] ?? '') : '').toString() == effectiveWorkerId);
+        dropdownValue = exists
+            ? effectiveWorkerId
+            : (data.workers.first is Map
+                ? (data.workers.first['id'] ?? '').toString()
+                : null);
+      }
+    } else {
+      dropdownValue = effectiveWorkerId;
+    }
+
     return AppScaffold(
       title: 'المطابقة والإغلاق اليومي',
       body: closingProv.isLoading
@@ -100,10 +130,75 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
               ? const Center(child: Text('تعذر تحميل بيانات الإغلاق'))
               : RefreshIndicator(
                   onRefresh: () =>
-                      context.read<DailyClosingProvider>().fetchTodayClosing(),
+                      context.read<DailyClosingProvider>().fetchTodayClosing(workerId: effectiveWorkerId),
                   child: ListView(
                     padding: const EdgeInsets.all(16),
                     children: [
+                      // محدد مطابقة العمال للمالك والعامل المسؤول (M-12)
+                      if ((isOwner || auth.isResponsibleWorker) && data.workers.isNotEmpty) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppColors.primary.withOpacity(0.25)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.person_pin_outlined, color: AppColors.primary, size: 22),
+                              const SizedBox(width: 8),
+                              const Text(
+                                'عرض صندوق:',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String?>(
+                                    value: dropdownValue,
+                                    isExpanded: true,
+                                    items: [
+                                      if (isOwner)
+                                        const DropdownMenuItem<String?>(
+                                          value: null,
+                                          child: Text(
+                                            'صندوق المتجر العام (المالك)',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: AppColors.primary,
+                                            ),
+                                          ),
+                                        ),
+                                      ...data.workers.map((w) {
+                                        final wMap = w is Map ? w : <String, dynamic>{};
+                                        final id = (wMap['id'] ?? '').toString();
+                                        final name = (wMap['name'] ?? wMap['full_name'] ?? 'عامل').toString();
+                                        final isResp = wMap['is_responsible'] == true;
+                                        return DropdownMenuItem<String?>(
+                                          value: id,
+                                          child: Text(
+                                            '$name ${isResp ? "(مسؤول)" : ""}',
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontWeight: isResp ? FontWeight.bold : FontWeight.normal,
+                                            ),
+                                          ),
+                                        );
+                                      }),
+                                    ],
+                                    onChanged: (val) {
+                                      setState(() => _selectedWorkerId = val);
+                                      context.read<DailyClosingProvider>().fetchTodayClosing(workerId: val);
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
                       // شريط قاعدة الصندوق اليومي المستقل (يبدأ من 0 دائماً)
                       Container(
                         padding: const EdgeInsets.all(12),
@@ -218,8 +313,11 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
 
                       if (!isClosed)
                         OutlinedButton.icon(
-                          onPressed: () =>
-                              _showActualCashDialog(data.actualCash, symbol),
+                          onPressed: () => _showActualCashDialog(
+                            data.actualCash,
+                            symbol,
+                            targetWorkerId: effectiveWorkerId,
+                          ),
                           icon: const Icon(Icons.edit_outlined),
                           label: const Text('إدخال / تعديل الكاش الفعلي في الدرج'),
                         ),
@@ -272,6 +370,13 @@ class _DailyClosingScreenState extends State<DailyClosingScreen> {
                                 symbol,
                                 negative: true,
                               ),
+                              if (((sum['cash_purchase_refunds'] as num?)?.toDouble() ?? 0) > 0)
+                                _cashLine(
+                                  '(+) استردادات مرتجعات مشتريات نقداً',
+                                  (sum['cash_purchase_refunds'] as num?)?.toDouble() ?? 0,
+                                  symbol,
+                                  positive: true,
+                                ),
                               _cashLine(
                                 '(-) مصروفات وسلف نقدية اليوم',
                                 (sum['cash_expenses'] as num?)?.toDouble() ?? 0,

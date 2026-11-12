@@ -12,11 +12,11 @@ type NavItem = {
 
 const items: NavItem[] = [
   { href: '/dashboard', label: 'لوحة التحكم', enabled: true },
-  { href: '/store-owners', label: 'مالكو المتاجر', enabled: false, hint: 'قريباً' },
-  { href: '/subscriptions', label: 'الاشتراكات', enabled: false, hint: 'قريباً' },
-  { href: '/devices', label: 'الأجهزة', enabled: false, hint: 'قريباً' },
-  { href: '/broadcasts', label: 'الإشعارات', enabled: false, hint: 'قريباً' },
-  { href: '/settings', label: 'إعدادات النظام', enabled: false, hint: 'قريباً' },
+  { href: '/store-owners', label: 'مالكو المتاجر', enabled: true },
+  { href: '/subscriptions', label: 'الاشتراكات', enabled: true },
+  { href: '/devices', label: 'الأجهزة', enabled: true },
+  { href: '/broadcasts', label: 'الإشعارات', enabled: true },
+  { href: '/settings', label: 'إعدادات النظام', enabled: true },
 ];
 
 export function Sidebar() {
@@ -76,8 +76,7 @@ export function Sidebar() {
 
       <div className="border-t border-brand-900/10 p-4">
         <p className="text-[11px] leading-relaxed text-muted">
-          عقود <code className="rounded bg-brand-900/5 px-1">/admin/*</code> الجديدة تُعتمد قبل تفعيل
-          الشاشات.
+          جميع مسارات <code className="rounded bg-brand-900/5 px-1">/v1/admin/*</code> متصلة ومحمية.
         </p>
       </div>
     </aside>

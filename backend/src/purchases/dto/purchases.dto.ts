@@ -28,6 +28,10 @@ import {
 
 export class PurchaseLineInputDto {
   @IsOptional()
+  @IsUUID('4', { message: 'معرّف بند الشراء غير صالح.' })
+  id?: string;
+
+  @IsOptional()
   @IsUUID('4', { message: 'معرّف الصنف غير صالح.' })
   itemId?: string;
 
@@ -120,6 +124,10 @@ export class CreatePurchaseDto {
   @IsOptional()
   @IsUUID('4', { message: 'معرّف الفاتورة غير صالح.' })
   id?: string;
+
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
 
   @IsUUID('4', { message: 'معرّف المورد مطلوب وبصيغة صحيحة.' })
   @IsNotEmpty({ message: 'اختيار المورد مطلوب.' })
@@ -289,6 +297,14 @@ export class CreatePurchaseReturnDto {
   @IsOptional()
   @IsUUID('4')
   id?: string;
+
+  @IsOptional()
+  @IsString()
+  clientOpId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  purchaseInvoiceId?: string;
 
   @IsUUID('4', { message: 'معرّف بند الفاتورة مطلوب.' })
   @IsNotEmpty({ message: 'تحديد بند الفاتورة مطلوب.' })

@@ -27,14 +27,16 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
 
   final _nameController = TextEditingController();
   final _customUnitController = TextEditingController();
-  final _qtyController = TextEditingController(text: '10');
+  final _qtyController = TextEditingController();
   final _costPriceController = TextEditingController();
   final _sellPriceController = TextEditingController();
+  final _plusFixedController = TextEditingController();
+  final _plusPercentController = TextEditingController();
   final _minEmergencyController = TextEditingController();
   final _maxEmergencyController = TextEditingController();
 
   String _selectedUnitOption = 'كيلو';
-  String _emergencyMode = 'MANUAL_RANGE'; // MANUAL_RANGE | PLUS_FIXED | PLUS_PERCENT | UNRESTRICTED
+  String _emergencyMode = 'RANGE_OR_OPEN'; // RANGE_OR_OPEN | COST_ONLY | COST_PLUS
 
   @override
   void dispose() {
@@ -43,6 +45,8 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
     _qtyController.dispose();
     _costPriceController.dispose();
     _sellPriceController.dispose();
+    _plusFixedController.dispose();
+    _plusPercentController.dispose();
     _minEmergencyController.dispose();
     _maxEmergencyController.dispose();
     super.dispose();
@@ -62,6 +66,8 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
     final qty = double.tryParse(_qtyController.text) ?? 0.0;
     final cost = double.tryParse(_costPriceController.text) ?? 0.0;
     final sell = double.tryParse(_sellPriceController.text) ?? 0.0;
+    final plusFixed = double.tryParse(_plusFixedController.text);
+    final plusPercent = double.tryParse(_plusPercentController.text);
     final minEmergency = double.tryParse(_minEmergencyController.text);
     final maxEmergency = double.tryParse(_maxEmergencyController.text);
 
@@ -75,6 +81,13 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
     if (name.isEmpty || qty <= 0 || cost <= 0 || sell <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('يرجى إدخال اسم الصنف والكمية وسعر التكلفة وسعر البيع بشكل صحيح')),
+      );
+      return;
+    }
+
+    if (_emergencyMode == 'COST_PLUS' && plusFixed == null && plusPercent == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('نمط التكلفة + هامش ربح يتطلب إدخال مبلغ ثابت أو نسبة مئوية')),
       );
       return;
     }
@@ -101,8 +114,10 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
       costPrice: cost,
       sellPrice: sell,
       emergencyPriceMode: _emergencyMode,
-      minEmergencyPrice: minEmergency,
-      maxEmergencyPrice: maxEmergency,
+      emergencyPricePlusFixed: _emergencyMode == 'COST_PLUS' ? plusFixed : null,
+      emergencyPricePlusPercent: _emergencyMode == 'COST_PLUS' ? plusPercent : null,
+      minEmergencyPrice: _emergencyMode != 'COST_ONLY' ? minEmergency : null,
+      maxEmergencyPrice: _emergencyMode != 'COST_ONLY' ? maxEmergency : null,
       promptOnSameDayPriceDiff: true,
     );
 
@@ -175,8 +190,11 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
         costPrice: cost,
         sellPrice: sell,
         emergencyPriceMode: _emergencyMode,
-        minEmergencyPrice: minEmergency,
-        maxEmergencyPrice: maxEmergency,
+        emergencyPricePlusFixed: _emergencyMode == 'COST_PLUS' ? plusFixed : null,
+        emergencyPricePlusPercent:
+            _emergencyMode == 'COST_PLUS' ? plusPercent : null,
+        minEmergencyPrice: _emergencyMode != 'COST_ONLY' ? minEmergency : null,
+        maxEmergencyPrice: _emergencyMode != 'COST_ONLY' ? maxEmergency : null,
         costingMethod: chosenMethod,
         promptOnSameDayPriceDiff: false,
       );
@@ -247,7 +265,7 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
                   ),
                   const SizedBox(height: 6),
                   Align(
-                    alignment: Alignment.centerLeft,
+                    alignment: AlignmentDirectional.centerEnd,
                     child: OutlinedButton.icon(
                       onPressed: () =>
                           Navigator.pushReplacementNamed(context, '/purchases/create'),
@@ -339,7 +357,10 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
                   child: TextFormField(
                     controller: _qtyController,
                     keyboardType: TextInputType.numberWithOptions(decimal: isWeight),
-                    decoration: InputDecoration(labelText: 'الكمية الموردة ($_resolvedUnit)'),
+                    decoration: InputDecoration(
+                      labelText: 'الكمية الموردة ($_resolvedUnit)',
+                      hintText: 'مثال: 10',
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -386,16 +407,38 @@ class _ItemsManageScreenState extends State<ItemsManageScreen> {
                       value: _emergencyMode,
                       decoration: const InputDecoration(labelText: 'نمط السياسة الاضطرارية'),
                       items: const [
-                        DropdownMenuItem(value: 'MANUAL_RANGE', child: Text('نطاق سعري محدد يدوياً (حد أدنى وأقصى)')),
-                        DropdownMenuItem(value: 'PLUS_FIXED', child: Text('هامش ربح ثابت فوق التكلفة')),
-                        DropdownMenuItem(value: 'PLUS_PERCENT', child: Text('نسبة مئوية فوق التكلفة')),
-                        DropdownMenuItem(value: 'UNRESTRICTED', child: Text('غير مقيد (أي سعر فوق الصفر)')),
+                        DropdownMenuItem(value: 'RANGE_OR_OPEN', child: Text('نطاق سعري محدد أو مفتوح (حد أدنى / أقصى)')),
+                        DropdownMenuItem(value: 'COST_ONLY', child: Text('بسعر التكلفة فقط (بدون ربح أو خسارة)')),
+                        DropdownMenuItem(value: 'COST_PLUS', child: Text('التكلفة + هامش ربح (مبلغ ثابت أو نسبة)')),
                       ],
-                      onChanged: (val) => setState(() => _emergencyMode = val ?? 'MANUAL_RANGE'),
+                      onChanged: (val) => setState(() => _emergencyMode = val ?? 'RANGE_OR_OPEN'),
                     ),
                     const SizedBox(height: 12),
 
-                    if (_emergencyMode == 'MANUAL_RANGE')
+                    if (_emergencyMode == 'COST_PLUS') ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _plusFixedController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              decoration: InputDecoration(labelText: 'هامش ربح ثابت ($symbol)'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _plusPercentController,
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              decoration: const InputDecoration(labelText: 'نسبة ربح فوق التكلفة (%)'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    if (_emergencyMode != 'COST_ONLY')
                       Row(
                         children: [
                           Expanded(

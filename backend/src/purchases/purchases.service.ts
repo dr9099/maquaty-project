@@ -29,6 +29,7 @@ import {
 const MAX_INVOICE_LINES = 200;
 
 type ComputedLine = {
+  id?: string;
   itemId?: string;
   itemName: string;
   unit: string;
@@ -267,6 +268,15 @@ export class PurchasesService {
   async create(user: AuthenticatedUser, dto: CreatePurchaseDto, ip?: string) {
     const storeOwnerId = user.storeOwnerId!;
 
+    if (dto.id) {
+      const existingInvoice = await this.prisma.purchaseInvoice.findFirst({
+        where: { id: dto.id, storeOwnerId },
+      });
+      if (existingInvoice) {
+        return this.getById(storeOwnerId, existingInvoice.id);
+      }
+    }
+
     if (dto.items.length > MAX_INVOICE_LINES) {
       throw ApiError.badRequest(
         'INVOICE_LINES_LIMIT_EXCEEDED',
@@ -354,7 +364,8 @@ export class PurchasesService {
             status: 'DRAFT',
             costingMethodUsed: costingMethod,
             items: {
-              create: computed.lines.map((l) => ({
+              create: computed.lines.map((l, idx) => ({
+                ...(l.id ? { id: l.id } : {}),
                 storeOwnerId,
                 itemId: l.itemId ?? null,
                 itemName: l.itemName,
@@ -375,6 +386,7 @@ export class PurchasesService {
                 emergencyPriceMin: l.emergencyPriceMin ?? null,
                 emergencyPriceMax: l.emergencyPriceMax ?? null,
                 remainingFifoQty: new Prisma.Decimal(0),
+                createdAt: new Date(Date.now() + idx),
               })),
             },
           },
@@ -454,15 +466,16 @@ export class PurchasesService {
       }
 
       // معالجة الأصناف وحساب التكلفة بقفل الصف (SELECT ... FOR UPDATE)
-      const resolvedItemIds = await this.applyInventoryAndCostingForLines(tx, {
-        storeOwnerId,
-        invoiceDate,
-        lines: computed.lines,
-        costingMethod,
-        explicitCostingProvided: dto.costingMethod !== undefined,
-        promptOnSameDayPriceDiff: dto.promptOnSameDayPriceDiff === true,
-        defaultEmergencyMode,
-      });
+      const { resolvedIds: resolvedItemIds, nextCostPrices } =
+        await this.applyInventoryAndCostingForLines(tx, {
+          storeOwnerId,
+          invoiceDate,
+          lines: computed.lines,
+          costingMethod,
+          explicitCostingProvided: dto.costingMethod !== undefined,
+          promptOnSameDayPriceDiff: dto.promptOnSameDayPriceDiff === true,
+          defaultEmergencyMode,
+        });
 
       const createdInvoice = await tx.purchaseInvoice.create({
         data: {
@@ -491,6 +504,7 @@ export class PurchasesService {
           postedAt: new Date(),
           items: {
             create: computed.lines.map((l, idx) => ({
+              ...(l.id ? { id: l.id } : {}),
               storeOwnerId,
               itemId: resolvedItemIds[idx],
               itemName: l.itemName,
@@ -503,7 +517,10 @@ export class PurchasesService {
               taxAmount: l.taxAmount,
               discountAmount: l.discountAmount,
               totalLineCost: l.totalLineCost,
-              effectiveBaseUnitCost: l.effectiveBaseUnitCost,
+              effectiveBaseUnitCost:
+                costingMethod === 'WEIGHTED_AVERAGE' || costingMethod === 'LAST_PRICE'
+                  ? nextCostPrices[idx]
+                  : l.effectiveBaseUnitCost,
               sellPrice: l.sellPrice,
               emergencyPriceMode: l.emergencyPriceMode ?? null,
               emergencyPricePlusFixed: l.emergencyPricePlusFixed ?? null,
@@ -511,6 +528,7 @@ export class PurchasesService {
               emergencyPriceMin: l.emergencyPriceMin ?? null,
               emergencyPriceMax: l.emergencyPriceMax ?? null,
               remainingFifoQty: l.baseQuantity,
+              createdAt: new Date(Date.now() + idx),
             })),
           },
         },
@@ -657,7 +675,7 @@ export class PurchasesService {
           ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
           ...(dto.costingMethod !== undefined ? { costingMethodUsed: dto.costingMethod } : {}),
           items: {
-            create: computed.lines.map((l) => ({
+            create: computed.lines.map((l, idx) => ({
               storeOwnerId,
               itemId: l.itemId ?? null,
               itemName: l.itemName,
@@ -678,6 +696,7 @@ export class PurchasesService {
               emergencyPriceMin: l.emergencyPriceMin ?? null,
               emergencyPriceMax: l.emergencyPriceMax ?? null,
               remainingFifoQty: new Prisma.Decimal(0),
+              createdAt: new Date(Date.now() + idx),
             })),
           },
         },
@@ -780,15 +799,16 @@ export class PurchasesService {
         );
       }
 
-      const resolvedItemIds = await this.applyInventoryAndCostingForLines(tx, {
-        storeOwnerId,
-        invoiceDate: draft.invoiceDate,
-        lines,
-        costingMethod,
-        explicitCostingProvided: dto.costingMethod !== undefined,
-        promptOnSameDayPriceDiff: dto.promptOnSameDayPriceDiff === true,
-        defaultEmergencyMode,
-      });
+      const { resolvedIds: resolvedItemIds, nextCostPrices } =
+        await this.applyInventoryAndCostingForLines(tx, {
+          storeOwnerId,
+          invoiceDate: draft.invoiceDate,
+          lines,
+          costingMethod,
+          explicitCostingProvided: dto.costingMethod !== undefined,
+          promptOnSameDayPriceDiff: dto.promptOnSameDayPriceDiff === true,
+          defaultEmergencyMode,
+        });
 
       for (let i = 0; i < draft.items.length; i++) {
         await tx.purchaseItem.update({
@@ -796,6 +816,9 @@ export class PurchasesService {
           data: {
             itemId: resolvedItemIds[i],
             remainingFifoQty: draft.items[i].baseQuantity,
+            ...(costingMethod === 'WEIGHTED_AVERAGE' || costingMethod === 'LAST_PRICE'
+              ? { effectiveBaseUnitCost: nextCostPrices[i] }
+              : {}),
           },
         });
       }
@@ -945,10 +968,10 @@ export class PurchasesService {
           );
         }
 
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE items SET quantity = quantity - ${pItem.baseQuantity}, updated_at = now()
-                     WHERE id = ${pItem.itemId}::uuid`,
-        );
+        await tx.item.update({
+          where: { id: pItem.itemId },
+          data: { quantity: { decrement: pItem.baseQuantity } },
+        });
         await tx.purchaseItem.update({
           where: { id: pItem.id },
           data: { remainingFifoQty: new Prisma.Decimal(0) },
@@ -1030,6 +1053,37 @@ export class PurchasesService {
     ip?: string,
   ) {
     const storeOwnerId = user.storeOwnerId!;
+    const isUuid = (val?: string) =>
+      typeof val === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const candidateReturnId = isUuid(dto.id) ? dto.id : isUuid(dto.clientOpId) ? dto.clientOpId : undefined;
+
+    if (candidateReturnId) {
+      const existingReturn = await this.prisma.purchaseReturn.findFirst({
+        where: { id: candidateReturnId, storeOwnerId },
+        include: { purchaseItem: { select: { baseUnit: true } } },
+      });
+      if (existingReturn) {
+        return {
+          return_id: existingReturn.id,
+          purchase_invoice_id: existingReturn.purchaseInvoiceId,
+          purchase_item_id: existingReturn.purchaseItemId,
+          supplier_id: existingReturn.supplierId,
+          item_id: existingReturn.itemId,
+          quantity: Number(existingReturn.quantity),
+          quantity_display: formatQuantityDisplay(
+            existingReturn.baseQuantity,
+            existingReturn.purchaseItem?.baseUnit,
+          ),
+          base_quantity: Number(existingReturn.baseQuantity),
+          unit_price: Number(existingReturn.unitPrice),
+          total_amount: Number(existingReturn.totalAmount),
+          refund_method: existingReturn.refundMethod,
+          reason: existingReturn.reason,
+          returned_at: existingReturn.returnedAt,
+        };
+      }
+    }
 
     const invoice = await this.prisma.purchaseInvoice.findFirst({
       where: { id: invoiceId, storeOwnerId },
@@ -1090,7 +1144,8 @@ export class PurchasesService {
     }
 
     const returnBaseQty = returnQty.mul(pItem.conversionFactor).toDecimalPlaces(3);
-    const returnAmount = returnBaseQty.mul(pItem.effectiveBaseUnitCost).toDecimalPlaces(2);
+    const originalNetLineCostMap = this.computeOriginalNetLineCosts(invoice);
+    const originalNetLineCost = originalNetLineCostMap.get(pItem.id) ?? pItem.totalLineCost;
     const today = startOfDay(new Date());
 
     const createdReturn = await this.prisma.$transaction(async (tx) => {
@@ -1129,6 +1184,61 @@ export class PurchasesService {
         );
       }
 
+      // 2.5) قفل الفاتورة وبند الشراء لضمان دقة الكميات المتبقية والمبالغ المرتجعة الجزئية المتكررة
+      const lockedInvoices = await tx.$queryRaw<
+        Array<{ id: string; remaining_amount: Prisma.Decimal; settled_amount: Prisma.Decimal }>
+      >(Prisma.sql`SELECT id, remaining_amount, settled_amount FROM purchase_invoices
+                   WHERE id = ${invoice.id}::uuid AND store_owner_id = ${storeOwnerId}::uuid FOR UPDATE`);
+      const lockedInvoice = lockedInvoices[0];
+      if (!lockedInvoice) throw ApiError.notFound('فاتورة الشراء غير موجودة.');
+
+      const lockedPItems = await tx.$queryRaw<
+        Array<{
+          id: string;
+          quantity: Prisma.Decimal;
+          base_quantity: Prisma.Decimal;
+          remaining_fifo_qty: Prisma.Decimal;
+          returned_quantity: Prisma.Decimal;
+        }>
+      >(Prisma.sql`SELECT id, quantity, base_quantity, remaining_fifo_qty, returned_quantity FROM purchase_items
+                   WHERE id = ${pItem.id}::uuid AND store_owner_id = ${storeOwnerId}::uuid FOR UPDATE`);
+      const lockedPItem = lockedPItems[0];
+      if (!lockedPItem) throw ApiError.notFound('بند الفاتورة المحدد غير موجود.');
+
+      const currentMaxReturnable = lockedPItem.quantity.minus(lockedPItem.returned_quantity);
+      if (returnQty.gt(currentMaxReturnable)) {
+        throw ApiError.badRequest(
+          'RETURN_QTY_EXCEEDS_PURCHASED',
+          'الكمية المرتجعة تتجاوز الكمية المشتراة المتبقية في الفاتورة.',
+          { max_returnable: Number(currentMaxReturnable) },
+        );
+      }
+
+      const existingReturnsAgg = await tx.purchaseReturn.aggregate({
+        where: { storeOwnerId, purchaseItemId: pItem.id },
+        _sum: { totalAmount: true },
+      });
+      const alreadyReturnedAmount = existingReturnsAgg._sum.totalAmount ?? new Prisma.Decimal(0);
+      const remainingLineCost = Prisma.Decimal.max(
+        new Prisma.Decimal(0),
+        originalNetLineCost.minus(alreadyReturnedAmount).toDecimalPlaces(2),
+      );
+
+      let returnAmount: Prisma.Decimal;
+      if (returnQty.eq(currentMaxReturnable)) {
+        returnAmount = remainingLineCost;
+      } else {
+        const rawProportional = originalNetLineCost
+          .mul(returnQty)
+          .div(lockedPItem.quantity)
+          .toDecimalPlaces(2);
+        returnAmount = Prisma.Decimal.min(remainingLineCost, rawProportional);
+      }
+
+      const returnUnitPrice = returnBaseQty.gt(0)
+        ? returnAmount.div(returnBaseQty).toDecimalPlaces(2)
+        : pItem.effectiveBaseUnitCost;
+
       // 3) قفل الصنف وفحص توفر الكمية في المخزون
       const lockedItems = await tx.$queryRaw<
         Array<{ id: string; quantity: Prisma.Decimal; deleted_at: Date | null }>
@@ -1159,33 +1269,37 @@ export class PurchasesService {
             { supplier_balance: Number(lockedSupplier.current_balance) },
           );
         }
+        if (lockedInvoice.remaining_amount.lt(returnAmount)) {
+          throw ApiError.badRequest(
+            'VALIDATION_ERROR',
+            'المبلغ المتبقي غير المسدد على هذه الفاتورة أقل من قيمة المرتجع. اختر الاسترداد النقدي (CASH_REFUND).',
+            { invoice_remaining_amount: Number(lockedInvoice.remaining_amount) },
+          );
+        }
 
         await tx.supplier.update({
           where: { id: invoice.supplierId },
           data: { currentBalance: { decrement: returnAmount } },
         });
 
-        const invReduction = Prisma.Decimal.min(invoice.remainingAmount, returnAmount);
-        if (invReduction.gt(0)) {
-          await tx.purchaseInvoice.update({
-            where: { id: invoice.id },
-            data: {
-              settledAmount: { increment: invReduction },
-              remainingAmount: { decrement: invReduction },
-            },
-          });
-        }
+        await tx.purchaseInvoice.update({
+          where: { id: invoice.id },
+          data: {
+            settledAmount: { increment: returnAmount },
+            remainingAmount: { decrement: returnAmount },
+          },
+        });
       }
 
       // 5) خصم المخزون وتحديث البند وطبقات FIFO
-      await tx.$executeRaw(
-        Prisma.sql`UPDATE items SET quantity = quantity - ${returnBaseQty}, updated_at = now()
-                   WHERE id = ${pItem.itemId}::uuid`,
-      );
+      await tx.item.update({
+        where: { id: pItem.itemId! },
+        data: { quantity: { decrement: returnBaseQty } },
+      });
 
       const nextFifo = Prisma.Decimal.max(
         new Prisma.Decimal(0),
-        pItem.remainingFifoQty.minus(returnBaseQty),
+        lockedPItem.remaining_fifo_qty.minus(returnBaseQty),
       );
       await tx.purchaseItem.update({
         where: { id: pItem.id },
@@ -1197,7 +1311,7 @@ export class PurchasesService {
 
       const ret = await tx.purchaseReturn.create({
         data: {
-          ...(dto.id ? { id: dto.id } : {}),
+          ...(candidateReturnId ? { id: candidateReturnId } : {}),
           storeOwnerId,
           workerId: actorWorkerId,
           purchaseInvoiceId: invoice.id,
@@ -1206,7 +1320,7 @@ export class PurchasesService {
           itemId: pItem.itemId!,
           quantity: returnQty,
           baseQuantity: returnBaseQty,
-          unitPrice: pItem.effectiveBaseUnitCost,
+          unitPrice: returnUnitPrice,
           totalAmount: returnAmount,
           refundMethod: dto.refundMethod,
           reason: dto.reason.trim(),
@@ -1391,18 +1505,33 @@ export class PurchasesService {
     }
 
     const netHeaderAdjustment = headerTax.minus(headerDiscount);
+    let allocatedNetSoFar = new Prisma.Decimal(0);
 
-    const lines: ComputedLine[] = preliminary.map((p) => {
-      const share = subtotal.gt(0)
-        ? netHeaderAdjustment.mul(p.totalLineCost).div(subtotal)
-        : new Prisma.Decimal(0);
-      const netLineTotal = p.totalLineCost.plus(share);
+    const lines: ComputedLine[] = preliminary.map((p, idx) => {
+      let netLineTotal: Prisma.Decimal;
+      if (idx === preliminary.length - 1) {
+        netLineTotal = Prisma.Decimal.max(
+          new Prisma.Decimal(0),
+          totalAmount.minus(allocatedNetSoFar).toDecimalPlaces(2),
+        );
+      } else {
+        const share = subtotal.gt(0)
+          ? netHeaderAdjustment.mul(p.totalLineCost).div(subtotal)
+          : new Prisma.Decimal(0);
+        netLineTotal = Prisma.Decimal.max(
+          new Prisma.Decimal(0),
+          p.totalLineCost.plus(share).toDecimalPlaces(2),
+        );
+        allocatedNetSoFar = allocatedNetSoFar.plus(netLineTotal);
+      }
+
       const effectiveBaseUnitCost = Prisma.Decimal.max(
         new Prisma.Decimal(0),
         netLineTotal.div(p.baseQty).toDecimalPlaces(2),
       );
 
       return {
+        id: p.raw.id,
         itemId: p.raw.itemId,
         itemName: p.raw.itemName.trim(),
         unit: p.raw.unit.trim(),
@@ -1437,6 +1566,46 @@ export class PurchasesService {
     });
 
     return { lines, subtotal, headerTax, headerDiscount, totalAmount };
+  }
+
+  private computeOriginalNetLineCosts(invoice: {
+    subtotal: Prisma.Decimal;
+    taxAmount: Prisma.Decimal;
+    discountAmount: Prisma.Decimal;
+    totalAmount: Prisma.Decimal;
+    items: Array<{ id: string; totalLineCost: Prisma.Decimal; createdAt: Date }>;
+  }): Map<string, Prisma.Decimal> {
+    const sorted = [...invoice.items].sort((a, b) => {
+      const tDiff = a.createdAt.getTime() - b.createdAt.getTime();
+      return tDiff !== 0 ? tDiff : a.id.localeCompare(b.id);
+    });
+    const result = new Map<string, Prisma.Decimal>();
+    if (sorted.length === 0) return result;
+
+    const netHeaderAdjustment = invoice.taxAmount.minus(invoice.discountAmount);
+    let allocatedSoFar = new Prisma.Decimal(0);
+
+    for (let i = 0; i < sorted.length; i++) {
+      const line = sorted[i];
+      if (i === sorted.length - 1) {
+        const remainder = Prisma.Decimal.max(
+          new Prisma.Decimal(0),
+          invoice.totalAmount.minus(allocatedSoFar).toDecimalPlaces(2),
+        );
+        result.set(line.id, remainder);
+      } else {
+        const share = invoice.subtotal.gt(0)
+          ? netHeaderAdjustment.mul(line.totalLineCost).div(invoice.subtotal)
+          : new Prisma.Decimal(0);
+        const netLine = Prisma.Decimal.max(
+          new Prisma.Decimal(0),
+          line.totalLineCost.plus(share).toDecimalPlaces(2),
+        );
+        result.set(line.id, netLine);
+        allocatedSoFar = allocatedSoFar.plus(netLine);
+      }
+    }
+    return result;
   }
 
   private async validateAndResolvePayment(
@@ -1520,7 +1689,7 @@ export class PurchasesService {
       promptOnSameDayPriceDiff: boolean;
       defaultEmergencyMode: EmergencyPriceMode;
     },
-  ): Promise<string[]> {
+  ): Promise<{ resolvedIds: string[]; nextCostPrices: Prisma.Decimal[] }> {
     const {
       storeOwnerId,
       invoiceDate,
@@ -1532,6 +1701,7 @@ export class PurchasesService {
     } = params;
 
     const resolvedIds: string[] = [];
+    const nextCostPrices: Prisma.Decimal[] = [];
     const conflicts: Array<Record<string, unknown>> = [];
 
     for (const line of lines) {
@@ -1591,6 +1761,31 @@ export class PurchasesService {
                      LIMIT 1
                      FOR UPDATE`);
         lockedItem = rows[0];
+
+        if (!lockedItem) {
+          const fallbackRows = await tx.$queryRaw<
+            Array<{
+              id: string;
+              name: string;
+              unit: string;
+              quantity: Prisma.Decimal;
+              cost_price: Prisma.Decimal;
+              sell_price: Prisma.Decimal;
+              entry_date: Date;
+              deleted_at: Date | null;
+            }>
+          >(Prisma.sql`SELECT id, name, unit, quantity, cost_price, sell_price, entry_date, deleted_at
+                       FROM items
+                       WHERE store_owner_id = ${storeOwnerId}::uuid
+                         AND deleted_at IS NULL
+                         AND name = ${line.itemName}
+                         AND unit = ${line.baseUnit}
+                         AND quantity = 0
+                       ORDER BY entry_date DESC, created_at DESC
+                       LIMIT 1
+                       FOR UPDATE`);
+          lockedItem = fallbackRows[0];
+        }
       }
 
       if (lockedItem) {
@@ -1644,12 +1839,28 @@ export class PurchasesService {
           });
         }
 
+        // مزامنة طبقات الشراء النشطة عند اختيار المتوسط المرجح أو السعر الجديد (أو عند تجديد السعر ليوم مختلف مع بقاء رصيد)
+        if (
+          hasStock &&
+          (!isSameDay || costingMethod === 'WEIGHTED_AVERAGE' || costingMethod === 'LAST_PRICE')
+        ) {
+          await tx.purchaseItem.updateMany({
+            where: {
+              storeOwnerId,
+              itemId: lockedItem.id,
+              remainingFifoQty: { gt: 0 },
+            },
+            data: { effectiveBaseUnitCost: nextCostPrice },
+          });
+        }
+
         await tx.item.update({
           where: { id: lockedItem.id },
           data: {
             quantity: { increment: line.baseQuantity },
             costPrice: nextCostPrice,
             sellPrice: line.sellPrice,
+            entryDate: invoiceDate,
             ...(line.emergencyPriceMode !== undefined
               ? { emergencyPriceMode: line.emergencyPriceMode }
               : {}),
@@ -1669,6 +1880,7 @@ export class PurchasesService {
         });
 
         resolvedIds.push(lockedItem.id);
+        nextCostPrices.push(nextCostPrice);
       } else {
         // صنف يومي جديد كلياً — يُعتمد سعر الشراء الفعلي مباشرة
         const createdItem = await tx.item.create({
@@ -1688,6 +1900,7 @@ export class PurchasesService {
           },
         });
         resolvedIds.push(createdItem.id);
+        nextCostPrices.push(line.effectiveBaseUnitCost);
       }
     }
 
@@ -1702,7 +1915,7 @@ export class PurchasesService {
       );
     }
 
-    return resolvedIds;
+    return { resolvedIds, nextCostPrices };
   }
 
   private async createPurchaseJournalEntries(

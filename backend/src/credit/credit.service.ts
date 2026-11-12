@@ -184,6 +184,31 @@ export class CreditService {
     const storeOwnerId = user.storeOwnerId!;
     await this.mustGetOwned(storeOwnerId, customerId);
 
+    const isUuid = (val?: string) =>
+      typeof val === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const candidatePaymentId = isUuid(dto.id) ? dto.id : isUuid(dto.clientOpId) ? dto.clientOpId : undefined;
+
+    if (candidatePaymentId) {
+      const existingPayment = await this.prisma.creditPayment.findFirst({
+        where: { id: candidatePaymentId, storeOwnerId },
+      });
+      if (existingPayment) {
+        const currentDebt = await this.calculateCustomerDebt(customerId);
+        return {
+          payment_id: existingPayment.id,
+          customer_id: customerId,
+          amount: Number(existingPayment.amount),
+          payment_method: existingPayment.paymentMethod,
+          wallet_id: existingPayment.walletId,
+          attachment_url: existingPayment.attachmentUrl,
+          notes: existingPayment.notes,
+          remaining_debt: currentDebt,
+          paid_at: existingPayment.paidAt,
+        };
+      }
+    }
+
     if (dto.amount <= 0) {
       throw ApiError.badRequest('VALIDATION_ERROR', 'مبلغ الدفعة يجب أن يكون أكبر من صفر.');
     }
@@ -251,6 +276,7 @@ export class CreditService {
     const payment = await this.prisma.$transaction(async (tx) => {
       const createdPayment = await tx.creditPayment.create({
         data: {
+          ...(candidatePaymentId ? { id: candidatePaymentId } : {}),
           storeOwnerId,
           creditCustomerId: customerId,
           amount: amountDecimal,

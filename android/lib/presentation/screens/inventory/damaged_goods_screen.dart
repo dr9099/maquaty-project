@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
@@ -22,7 +24,8 @@ class _DamagedGoodsScreenState extends State<DamagedGoodsScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      context.read<InventoryProvider>().fetchInventory();
+      final storeOwnerId = context.read<AuthProvider>().storeOwnerId;
+      context.read<InventoryProvider>().fetchInventory(storeOwnerId: storeOwnerId);
     });
   }
 
@@ -52,16 +55,25 @@ class _DamagedGoodsScreenState extends State<DamagedGoodsScreen> {
     }
 
     final inventory = context.read<InventoryProvider>();
+    final auth = context.read<AuthProvider>();
     final success = await inventory.recordDamagedGoods(
       itemId: _selectedItem!.id,
       quantity: qty,
       reason: reason,
       photoUrl: _photoUrl,
+      storeOwnerId: auth.storeOwnerId,
+      canRecordDamagedGoods: auth.canRecordDamagedGoods,
     );
 
     if (success && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تم تسجيل التالف وخصمه من المخزون بنجاح ✅')),
+        SnackBar(
+          content: Text(
+            inventory.lastOperationQueuedOffline
+                ? 'تم حفظ البضاعة التالفة وخصمها من المخزون محلياً بانتظار المزامنة ✅'
+                : 'تم تسجيل التالف وخصمه من المخزون بنجاح ✅',
+          ),
+        ),
       );
       Navigator.pop(context);
     } else if (mounted && inventory.errorMessage != null) {
@@ -151,12 +163,30 @@ class _DamagedGoodsScreenState extends State<DamagedGoodsScreen> {
                   color: _photoUrl != null ? AppColors.cashGreen : AppColors.primary,
                 ),
                 title: Text(_photoUrl != null ? 'تم إرفاق صورة التالف' : 'التقاط أو إرفاق صورة التالف'),
-                subtitle: const Text('لتوثيق التلف ومنع التلاعب (BR-014)', style: TextStyle(fontSize: 11)),
+                subtitle: const Text('لتوثيق التلف ومنع التلاعب', style: TextStyle(fontSize: 11)),
                 trailing: TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _photoUrl = 'https://attachments.maqouti.test/damaged-proof.jpg';
-                    });
+                  onPressed: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    try {
+                      final picked = await ImagePicker().pickImage(
+                        source: ImageSource.gallery,
+                        imageQuality: 75,
+                      );
+                      if (picked != null && mounted) {
+                        setState(() {
+                          _photoUrl = picked.path;
+                        });
+                      }
+                    } catch (_) {
+                      if (mounted) {
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            backgroundColor: AppColors.lossRed,
+                            content: Text('تعذر الوصول للصور. يرجى التحقق من صلاحيات التطبيق.'),
+                          ),
+                        );
+                      }
+                    }
                   },
                   child: const Text('إرفاق صورة'),
                 ),

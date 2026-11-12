@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart' hide TextDirection;
+import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/error_formatter.dart';
 import '../../../core/utils/quantity_formatter.dart';
+import '../../providers/auth_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// شاشة معالجة العمليات المرفوضة — الشاشة 28 (REJECTED_TRANSACTIONS / 28-rejected-transactions.jpg)
@@ -42,13 +46,19 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
   Future<void> _resolve(String id, String action, {double? adjustedQty}) async {
     try {
       final api = ApiClient();
-      await api.post(
+      final res = await api.post(
         ApiEndpoints.resolveRejectedTransaction(id),
         data: {
           'resolutionAction': action,
           if (adjustedQty != null) 'adjustedQuantity': adjustedQty,
         },
       );
+      if (res.data is Map && mounted) {
+        final status = (res.data['account_status'] ?? res.data['accountStatus'])?.toString();
+        if (status != null && status.isNotEmpty) {
+          context.read<AuthProvider>().updateAccountStatus(status);
+        }
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('تمت معالجة العملية المرفوضة بنجاح ✅')),
@@ -58,7 +68,7 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
+          SnackBar(content: Text(formatUserError(e))),
         );
       }
     }
@@ -95,8 +105,9 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
 
   @override
   Widget build(BuildContext context) {
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
     return AppScaffold(
-      title: 'العمليات المرفوضة (R-30)',
+      title: 'العمليات المرفوضة',
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
           : _transactions.isEmpty
@@ -121,7 +132,9 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
                       final double amount = (payload['amount'] as num?)?.toDouble() ?? 0.0;
                       final double quantity = (payload['quantity'] as num?)?.toDouble() ?? 0.0;
                       final String? rawUnit = payload['unit']?.toString();
-                      final String displayQty = formatQuantityDisplay(quantity, unit: rawUnit);
+                      final String? quantityUnit = (payload['quantityUnit'] ?? payload['quantity_unit'])?.toString().toUpperCase();
+                      final bool isGramPayload = quantityUnit == 'GRAM' && !isGramUnit(rawUnit);
+                      final String displayQty = formatQuantityDisplay(isGramPayload ? quantity / 1000.0 : quantity, unit: rawUnit);
 
                       final isCreditLimit = reasonCode == 'CREDIT_LIMIT_EXCEEDED';
                       final isStock = reasonCode == 'INSUFFICIENT_STOCK';
@@ -146,7 +159,7 @@ class _RejectedTransactionsScreenState extends State<RejectedTransactionsScreen>
                                     ],
                                   ),
                                   Text(
-                                    '${_currencyFormat.format(amount)} ريال',
+                                    '${_currencyFormat.format(amount)} $symbol',
                                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: AppColors.primary),
                                   ),
                                 ],

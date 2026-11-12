@@ -27,7 +27,7 @@ class ApiClient {
   late final Dio _dio;
   final SecureStorageService _storage = SecureStorageService();
   String _baseUrl = ApiEndpoints.defaultBaseUrl;
-  bool _isRefreshing = false;
+  Future<String?>? _refreshFuture;
 
   ApiClient({String? baseUrl}) {
     if (baseUrl != null) _baseUrl = baseUrl;
@@ -49,14 +49,52 @@ class ApiClient {
     _dio.options.baseUrl = url;
   }
 
+  Future<String?> _performTokenRefresh(String fingerprint) async {
+    try {
+      final activeAccount = await _storage.getActiveAccount();
+      if (activeAccount != null && activeAccount.refreshToken.isNotEmpty) {
+        final tokenDio = Dio(_dio.options);
+        final refreshResponse = await tokenDio.post(
+          ApiEndpoints.refreshToken,
+          data: {'refreshToken': activeAccount.refreshToken},
+          options: Options(headers: {
+            'Authorization': null,
+            'X-Device-Fingerprint': fingerprint,
+          }),
+        );
+
+        if (refreshResponse.statusCode == 200 || refreshResponse.statusCode == 201) {
+          final newAccess = (refreshResponse.data['access_token'] ??
+                  refreshResponse.data['accessToken'] ??
+                  '')
+              .toString();
+          final newRefresh = (refreshResponse.data['refresh_token'] ??
+                  refreshResponse.data['refreshToken'] ??
+                  '')
+              .toString();
+
+          final updatedAccount = activeAccount.copyWith(
+            accessToken: newAccess,
+            refreshToken: newRefresh,
+          );
+          await _storage.saveAccount(updatedAccount, setActive: true);
+          return newAccess;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   void _setupInterceptors() {
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) async {
         final activeAccount = await _storage.getActiveAccount();
-        if (activeAccount != null && activeAccount.accessToken.isNotEmpty) {
+        if (options.headers['Authorization'] == null &&
+            activeAccount != null &&
+            activeAccount.accessToken.isNotEmpty) {
           options.headers['Authorization'] = 'Bearer ${activeAccount.accessToken}';
         }
-        // بصمة الجهاز المعتمدة (R-25)
+        // استخراج بصمة الجهاز الفعلية ديناميكياً من الكاش مباشرة (R-25)
         final fingerprint = await DeviceInfoService.getDeviceFingerprint();
         options.headers['X-Device-Fingerprint'] = fingerprint;
         return handler.next(options);
@@ -64,58 +102,40 @@ class ApiClient {
       onError: (DioException error, handler) async {
         final response = error.response;
 
-        // في حال 401 ومحاولة التدوير التلقائي Refresh Token Rotation (R-02)
+        // في حال 401 ومحاولة التدوير التلقائي Single-Flight Refresh Token Rotation (R-02)
         if (response?.statusCode == 401 &&
             !error.requestOptions.path.contains(ApiEndpoints.login) &&
-            !error.requestOptions.path.contains(ApiEndpoints.refreshToken) &&
-            !_isRefreshing) {
-          _isRefreshing = true;
+            !error.requestOptions.path.contains(ApiEndpoints.refreshToken)) {
           try {
-            final activeAccount = await _storage.getActiveAccount();
-            if (activeAccount != null && activeAccount.refreshToken.isNotEmpty) {
-              final refreshResponse = await _dio.post(
-                ApiEndpoints.refreshToken,
-                data: {'refreshToken': activeAccount.refreshToken},
-                options: Options(headers: {'Authorization': null}),
+            final fingerprint = await DeviceInfoService.getDeviceFingerprint();
+            _refreshFuture ??= _performTokenRefresh(fingerprint).whenComplete(() {
+              _refreshFuture = null;
+            });
+
+            final newAccess = await _refreshFuture;
+            if (newAccess != null && newAccess.isNotEmpty) {
+              final tokenDio = Dio(_dio.options);
+              final opts = error.requestOptions;
+              opts.headers['Authorization'] = 'Bearer $newAccess';
+              opts.headers['X-Device-Fingerprint'] = fingerprint;
+              final cloneReq = await tokenDio.request(
+                opts.path,
+                options: Options(
+                  method: opts.method,
+                  headers: opts.headers,
+                  responseType: opts.responseType,
+                  contentType: opts.contentType,
+                  validateStatus: opts.validateStatus,
+                  receiveTimeout: opts.receiveTimeout,
+                  sendTimeout: opts.sendTimeout,
+                  extra: opts.extra,
+                ),
+                data: opts.data,
+                queryParameters: opts.queryParameters,
               );
-
-              if (refreshResponse.statusCode == 200 || refreshResponse.statusCode == 201) {
-                final newAccess = (refreshResponse.data['access_token'] ??
-                        refreshResponse.data['accessToken'] ??
-                        '')
-                    .toString();
-                final newRefresh = (refreshResponse.data['refresh_token'] ??
-                        refreshResponse.data['refreshToken'] ??
-                        '')
-                    .toString();
-
-                final updatedAccount = activeAccount.copyWith(
-                  accessToken: newAccess,
-                  refreshToken: newRefresh,
-                );
-                await _storage.saveAccount(updatedAccount, setActive: true);
-
-                // إعادة المحاولة بالتوكن الجديد
-                final opts = error.requestOptions;
-                opts.headers['Authorization'] = 'Bearer $newAccess';
-                final cloneReq = await _dio.request(
-                  opts.path,
-                  options: Options(
-                    method: opts.method,
-                    headers: opts.headers,
-                  ),
-                  data: opts.data,
-                  queryParameters: opts.queryParameters,
-                );
-                _isRefreshing = false;
-                return handler.resolve(cloneReq);
-              }
+              return handler.resolve(cloneReq);
             }
-          } catch (_) {
-            _isRefreshing = false;
-          } finally {
-            _isRefreshing = false;
-          }
+          } catch (_) {}
         }
 
         // تحويل استجابة الخادم إلى ApiException
@@ -149,9 +169,19 @@ class ApiClient {
     }
   }
 
-  Future<Response> post(String path, {dynamic data, Map<String, dynamic>? queryParameters}) async {
+  Future<Response> post(
+    String path, {
+    dynamic data,
+    Map<String, dynamic>? queryParameters,
+    Options? options,
+  }) async {
     try {
-      return await _dio.post(path, data: data, queryParameters: queryParameters);
+      return await _dio.post(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: options,
+      );
     } on DioException catch (e) {
       if (e.error is ApiException) throw e.error!;
       throw ApiException(code: 'NETWORK_ERROR', message: 'تعذر الاتصال بالخادم.');
@@ -173,6 +203,27 @@ class ApiClient {
     } on DioException catch (e) {
       if (e.error is ApiException) throw e.error!;
       throw ApiException(code: 'NETWORK_ERROR', message: 'تعذر الاتصال بالخادم.');
+    }
+  }
+
+  Future<String> uploadFile(String filePath) async {
+    try {
+      final fileName = filePath.split(RegExp(r'[\\/]')).last;
+      final formData = FormData.fromMap({
+        'file': await MultipartFile.fromFile(filePath, filename: fileName),
+      });
+      final res = await _dio.post(
+        ApiEndpoints.uploads,
+        data: formData,
+        options: Options(contentType: 'multipart/form-data'),
+      );
+      if (res.data is Map && res.data['url'] != null) {
+        return res.data['url'].toString();
+      }
+      throw ApiException(code: 'UPLOAD_FAILED', message: 'فشل رفع الملف إلى الخادم.');
+    } on DioException catch (e) {
+      if (e.error is ApiException) throw e.error!;
+      throw ApiException(code: 'NETWORK_ERROR', message: 'تعذر الاتصال بالخادم لرفع الملف.');
     }
   }
 }

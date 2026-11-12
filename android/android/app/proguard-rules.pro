@@ -1,5 +1,5 @@
 # ==============================================================================
-# ProGuard / R8 Rules for Maqouti App (Safe Build Optimization)
+# ProGuard / R8 Rules for Maquaty App (Safe Build Optimization)
 # ==============================================================================
 
 # 1. Flutter Engine & Embedding
@@ -12,8 +12,8 @@
 -keep class io.flutter.embedding.** { *; }
 
 # 2. Application Classes & Native JNI Calls
--keep class com.kareemtech.maqouti.** { *; }
--dontwarn com.kareemtech.maqouti.**
+-keep class com.kareemtech.maquaty.** { *; }
+-dontwarn com.kareemtech.maquaty.**
 
 # 3. Preserve JNI native method signatures
 -keepclasseswithmembernames class * {

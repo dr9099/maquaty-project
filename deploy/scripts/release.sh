@@ -9,7 +9,7 @@ cd "$(dirname "$0")/../.."
 : "${IMAGE_TAG:?IMAGE_TAG مطلوب}"
 
 COMPOSE="docker compose -f deploy/docker-compose.prod.yml"
-API_DOMAIN="${API_DOMAIN:-api.maqouti.app}"
+API_DOMAIN="${API_DOMAIN:-api.maquaty.app}"
 STATE_FILE="deploy/.current_tag"
 PREVIOUS_TAG="$(cat "$STATE_FILE" 2>/dev/null || true)"
 

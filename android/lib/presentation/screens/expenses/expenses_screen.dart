@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/error_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
@@ -249,7 +250,7 @@ class _ExpensesScreenState extends State<ExpensesScreen>
                         ),
                         const DropdownMenuItem(
                           value: 'ELECTRONIC',
-                          child: Text('محفظة إلكترونية (11xx)'),
+                          child: Text('محفظة إلكترونية'),
                         ),
                         if (allowsCredit)
                           const DropdownMenuItem(
@@ -345,7 +346,7 @@ class _ExpensesScreenState extends State<ExpensesScreen>
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 backgroundColor: AppColors.lossRed,
-                                content: Text(e.toString()),
+                                content: Text(formatUserError(e)),
                               ),
                             );
                           }
@@ -473,7 +474,7 @@ class _ExpensesScreenState extends State<ExpensesScreen>
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           backgroundColor: AppColors.lossRed,
-                          content: Text(e.toString()),
+                          content: Text(formatUserError(e)),
                         ),
                       );
                     }
@@ -581,7 +582,7 @@ class _ExpensesScreenState extends State<ExpensesScreen>
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           backgroundColor: AppColors.lossRed,
-                          content: Text(e.toString()),
+                          content: Text(formatUserError(e)),
                         ),
                       );
                     }

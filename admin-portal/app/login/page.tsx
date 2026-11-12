@@ -1,12 +1,62 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { AuthShell } from '@/components/auth-shell';
+import { apiFetch, ApiError } from '@/lib/api';
 
-// شاشة هيكلية فقط — لا تُرسل بيانات حقيقية حتى تُعتمد عقود /admin/auth.
 export default function LoginPage() {
+  const router = useRouter();
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
   const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setNotice('');
+    setLoading(true);
+
+    try {
+      const res = await apiFetch<{
+        mfa_required: boolean;
+        mfa_challenge_token: string;
+        mfa_enrollment?: {
+          secret: string;
+          otpauth_url: string;
+        };
+      }>('/auth/admin/login', {
+        method: 'POST',
+        body: { phone: phone.trim(), password },
+      });
+
+      if (res.mfa_challenge_token) {
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem('maquaty_admin_mfa_challenge_token', res.mfa_challenge_token);
+          if (res.mfa_enrollment) {
+            window.sessionStorage.setItem(
+              'maquaty_admin_mfa_enrollment',
+              JSON.stringify(res.mfa_enrollment)
+            );
+          } else {
+            window.sessionStorage.removeItem('maquaty_admin_mfa_enrollment');
+          }
+        }
+        router.push('/mfa');
+      } else {
+        setNotice('فشل الحصول على رمز التحقق بخطوتين من الخادم.');
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setNotice(err.message);
+      } else {
+        setNotice('تعذّر الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <AuthShell
@@ -23,25 +73,22 @@ export default function LoginPage() {
         </div>
       }
     >
-      <form
-        className="space-y-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setNotice('الشاشة جاهزة، لكن نقطة الدخول الإدارية لم تُعتمد بعد. لن يُرسل أي شيء.');
-        }}
-      >
+      <form className="space-y-4" onSubmit={handleSubmit}>
         <div>
-          <label className="field-label" htmlFor="email">
-            البريد الإلكتروني
+          <label className="field-label" htmlFor="phone">
+            رقم الهاتف
           </label>
           <input
             className="field-input"
-            id="email"
-            name="email"
-            type="email"
+            id="phone"
+            name="phone"
+            type="tel"
             autoComplete="username"
-            placeholder="admin@maqouti.app"
+            placeholder="777000000"
+            value={phone}
+            onChange={(event) => setPhone(event.target.value)}
             required
+            disabled={loading}
           />
         </div>
 
@@ -56,12 +103,15 @@ export default function LoginPage() {
             type="password"
             autoComplete="current-password"
             placeholder="••••••••"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
             required
+            disabled={loading}
           />
         </div>
 
-        <button className="btn-primary w-full" type="submit">
-          متابعة
+        <button className="btn-primary w-full" type="submit" disabled={loading}>
+          {loading ? 'جارٍ التحقق...' : 'متابعة'}
         </button>
 
         {notice ? (

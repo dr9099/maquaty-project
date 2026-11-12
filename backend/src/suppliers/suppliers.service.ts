@@ -75,6 +75,20 @@ export class SuppliersService {
 
   async create(user: AuthenticatedUser, dto: CreateSupplierDto, ip?: string) {
     const storeOwnerId = user.storeOwnerId!;
+    const isUuid = (val?: string) =>
+      typeof val === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const candidateSupplierId = isUuid(dto.id) ? dto.id : isUuid(dto.clientOpId) ? dto.clientOpId : undefined;
+
+    if (candidateSupplierId) {
+      const existingById = await this.prisma.supplier.findFirst({
+        where: { id: candidateSupplierId, storeOwnerId, deletedAt: null },
+      });
+      if (existingById) {
+        return serializeSupplier(existingById);
+      }
+    }
+
     const trimmedName = dto.name.trim();
     const trimmedPhone = dto.phone?.trim() ? dto.phone.trim() : null;
 
@@ -89,7 +103,7 @@ export class SuppliersService {
 
       const created = await tx.supplier.create({
         data: {
-          ...(dto.id ? { id: dto.id } : {}),
+          ...(candidateSupplierId ? { id: candidateSupplierId } : {}),
           storeOwnerId,
           name: trimmedName,
           phone: trimmedPhone,
@@ -278,7 +292,32 @@ export class SuppliersService {
   ) {
     const storeOwnerId = user.storeOwnerId!;
     const actorWorkerId = user.role === 'WORKER' ? user.workerId ?? null : null;
-    await this.mustGetOwned(storeOwnerId, supplierId);
+    const supplier = await this.mustGetOwned(storeOwnerId, supplierId);
+
+    const isUuid = (val?: string) =>
+      typeof val === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const candidatePaymentId = isUuid(dto.id) ? dto.id : isUuid(dto.clientOpId) ? dto.clientOpId : undefined;
+
+    if (candidatePaymentId) {
+      const existingPayment = await this.prisma.supplierPayment.findFirst({
+        where: { id: candidatePaymentId, storeOwnerId },
+      });
+      if (existingPayment) {
+        return {
+          payment_id: existingPayment.id,
+          supplier_id: supplierId,
+          purchase_invoice_id: existingPayment.purchaseInvoiceId,
+          amount: Number(existingPayment.amount),
+          payment_method: existingPayment.paymentMethod,
+          wallet_id: existingPayment.walletId,
+          receipt_attachment_url: existingPayment.receiptAttachmentUrl,
+          notes: existingPayment.notes,
+          remaining_balance: Number(supplier.currentBalance),
+          paid_at: existingPayment.paidAt,
+        };
+      }
+    }
 
     if (dto.paymentMethod !== PaymentType.CASH && dto.paymentMethod !== PaymentType.ELECTRONIC) {
       throw ApiError.badRequest('VALIDATION_ERROR', 'طريقة السداد يجب أن تكون CASH أو ELECTRONIC فقط.');
@@ -422,7 +461,7 @@ export class SuppliersService {
 
       const payment = await tx.supplierPayment.create({
         data: {
-          ...(dto.id ? { id: dto.id } : {}),
+          ...(candidatePaymentId ? { id: candidatePaymentId } : {}),
           storeOwnerId,
           workerId: actorWorkerId,
           supplierId,

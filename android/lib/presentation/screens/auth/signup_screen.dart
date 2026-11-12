@@ -45,7 +45,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
     if (password.length < 8) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('كلمة المرور يجب ألا تقل عن 8 خانات (R-34)')),
+        const SnackBar(content: Text('كلمة المرور يجب ألا تقل عن 8 خانات')),
       );
       return;
     }

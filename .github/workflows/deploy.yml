@@ -34,7 +34,7 @@ jobs:
         with:
           context: ./backend
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/maqouti-backend:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/maquaty-backend:${{ github.sha }}
 
       - name: Build admin portal
         uses: docker/build-push-action@v6
@@ -43,7 +43,7 @@ jobs:
           push: true
           build-args: |
             NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL }}
-          tags: ghcr.io/${{ github.repository_owner }}/maqouti-admin-portal:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/maquaty-admin-portal:${{ github.sha }}
 
   deploy:
     name: Deploy to VPS

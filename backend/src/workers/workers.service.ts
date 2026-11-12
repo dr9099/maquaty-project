@@ -4,6 +4,7 @@ import { hash } from '@node-rs/argon2';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { ApiError } from '../common/api-error';
+import { AccountStatusGuard } from '../common/account-status.guard';
 import { CreateWorkerDto, UpdateWorkerDto } from './dto/workers.dto';
 
 // إدارة العمال — API_SPEC القسم 2 (حصري للمالك) + R-33 (موافقات) + R-11 (المسؤول الوحيد)
@@ -15,11 +16,37 @@ export class WorkersService {
   ) {}
 
   async list(storeOwnerId: string) {
-    const workers = await this.prisma.worker.findMany({
-      where: { storeOwnerId, status: { not: WorkerStatus.DELETED } },
-      orderBy: { createdAt: 'asc' },
-    });
-    return workers.map(serializeWorker);
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+
+    const [workers, salesByWorker] = await Promise.all([
+      this.prisma.worker.findMany({
+        where: { storeOwnerId, status: { not: WorkerStatus.DELETED } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.sale.groupBy({
+        by: ['workerId'],
+        where: {
+          storeOwnerId,
+          workerId: { not: null },
+          soldAt: { gte: todayStart, lt: todayEnd },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const todaySalesMap = new Map<string, number>();
+    for (const row of salesByWorker) {
+      if (row.workerId) {
+        todaySalesMap.set(row.workerId, Number(row._sum.amount ?? 0));
+      }
+    }
+
+    return workers.map((w) => ({
+      ...serializeWorker(w),
+      today_sales: todaySalesMap.get(w.id) ?? 0,
+    }));
   }
 
   async create(storeOwnerId: string, dto: CreateWorkerDto, ip?: string) {
@@ -27,6 +54,7 @@ export class WorkersService {
       throw ApiError.badRequest('PASSWORD_MISMATCH', 'كلمتا المرور غير متطابقتين.');
     }
     await this.assertPhoneAvailable(dto.phone);
+    const contactPhone = await this.getContactPhone();
 
     const created = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // R-33: العامل العادي يتطلب رصيد موافقات — الموقوف يُحتسب والمحذوف يفتح مكاناً؛ المسؤول لا يُحتسب
@@ -45,7 +73,7 @@ export class WorkersService {
         if (normalCount >= owner.maxWorkersAllowed) {
           throw ApiError.forbidden(
             'WORKER_LIMIT_REACHED',
-            'لا يوجد رصيد موافقات لإضافة عامل عادي. تواصل مع مالك التطبيق (735717710) لمنح رصيد.',
+            `لا يوجد رصيد موافقات لإضافة عامل عادي. تواصل مع مالك التطبيق (${contactPhone}) لمنح رصيد.`,
           );
         }
       }
@@ -124,6 +152,7 @@ export class WorkersService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+    AccountStatusGuard.invalidateWorker(id);
     return serializeWorker(updated);
   }
 
@@ -146,6 +175,7 @@ export class WorkersService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+    AccountStatusGuard.invalidateWorker(id);
     return { password_changed: true as const };
   }
 
@@ -178,6 +208,7 @@ export class WorkersService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+    AccountStatusGuard.invalidateWorker(id);
     return serializeWorker(updated);
   }
 
@@ -198,6 +229,7 @@ export class WorkersService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+    AccountStatusGuard.invalidateWorker(id);
     return { deleted: true as const };
   }
 
@@ -221,6 +253,7 @@ export class WorkersService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+    AccountStatusGuard.invalidateWorker(id);
     return serializeWorker(updated);
   }
 
@@ -240,22 +273,49 @@ export class WorkersService {
       ipAddress: ip,
       result: 'SUCCESS',
     });
+    AccountStatusGuard.invalidateWorker(id);
     return serializeWorker(updated);
   }
 
   // ─── العمال المدارين (MANAGED_WORKERS — حصري للعامل المسؤول، اطلاع فقط R-11) ──
 
   async managedList(storeOwnerId: string) {
-    const workers = await this.prisma.worker.findMany({
-      where: { storeOwnerId, status: { in: [WorkerStatus.ACTIVE, WorkerStatus.SUSPENDED] } },
-      orderBy: { createdAt: 'asc' },
-    });
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
+
+    const [workers, salesByWorker] = await Promise.all([
+      this.prisma.worker.findMany({
+        where: { storeOwnerId, status: { in: [WorkerStatus.ACTIVE, WorkerStatus.SUSPENDED] } },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.sale.groupBy({
+        by: ['workerId'],
+        where: {
+          storeOwnerId,
+          workerId: { not: null },
+          soldAt: { gte: todayStart, lt: todayEnd },
+        },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const todaySalesMap = new Map<string, number>();
+    for (const row of salesByWorker) {
+      if (row.workerId) {
+        todaySalesMap.set(row.workerId, Number(row._sum.amount ?? 0));
+      }
+    }
+
     return workers.map((w) => ({
       id: w.id,
       full_name: w.fullName,
+      name: w.fullName,
       phone: w.phone,
       status: w.status,
       is_responsible: w.isResponsible,
+      is_responsible_worker: w.isResponsible,
+      today_sales: todaySalesMap.get(w.id) ?? 0,
     }));
   }
 
@@ -303,8 +363,14 @@ export class WorkersService {
   }
 
   private async assertPhoneAvailable(phone: string) {
-    const owner = await this.prisma.storeOwner.findFirst({ where: { phone, deletedAt: null } });
-    const worker = await this.prisma.worker.findUnique({ where: { phone } });
+    const owner = await this.prisma.storeOwner.findFirst({
+      where: { phone, deletedAt: null },
+      select: { id: true },
+    });
+    const worker = await this.prisma.worker.findUnique({
+      where: { phone },
+      select: { id: true },
+    });
     if (owner || worker) {
       throw ApiError.conflict('PHONE_ALREADY_EXISTS', 'رقم الهاتف مستخدم مسبقاً.');
     }
@@ -330,6 +396,10 @@ export class WorkersService {
         );
       }
       await tx.worker.update({ where: { id: current.id }, data: { isResponsible: false } });
+      AccountStatusGuard.invalidateWorker(current.id);
+    }
+    if (newResponsibleId) {
+      AccountStatusGuard.invalidateWorker(newResponsibleId);
     }
   }
 
@@ -338,6 +408,20 @@ export class WorkersService {
       where: { userType: 'WORKER', userId: workerId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  private async getContactPhone(): Promise<string> {
+    try {
+      const setting = await this.prisma.systemSetting?.findUnique({
+        where: { key: 'contact_phone' },
+      });
+      const raw: unknown = setting?.value;
+      const value =
+        typeof raw === 'object' && raw !== null && 'v' in raw ? (raw as { v?: unknown }).v : raw;
+      return typeof value === 'string' && value.trim() !== '' ? value.trim() : '735717710';
+    } catch {
+      return '735717710';
+    }
   }
 }
 
@@ -364,9 +448,11 @@ function serializeWorker(w: WorkerRow) {
   return {
     id: w.id,
     full_name: w.fullName,
+    name: w.fullName,
     phone: w.phone,
     status: w.status,
     is_responsible: w.isResponsible,
+    is_responsible_worker: w.isResponsible,
     permissions: permissionsOf(w),
     last_login_at: w.lastLoginAt,
   };

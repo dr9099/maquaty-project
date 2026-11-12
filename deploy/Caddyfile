@@ -13,13 +13,13 @@
 	}
 }
 
-{$API_DOMAIN:api.maqouti.app} {
+{$API_DOMAIN:api.maquaty.app} {
 	import security_headers
 	encode zstd gzip
 	reverse_proxy api:3000
 }
 
-{$ADMIN_DOMAIN:admin.maqouti.app} {
+{$ADMIN_DOMAIN:admin.maquaty.app} {
 	encode zstd gzip
 	header {
 		X-Content-Type-Options "nosniff"
@@ -27,17 +27,20 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "geolocation=(), microphone=(), camera=()"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://{$API_DOMAIN:api.maqouti.app}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://{$API_DOMAIN:api.maquaty.app}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		-Server
+	}
+	handle /v1/* {
+		reverse_proxy api:3000
 	}
 	reverse_proxy admin-portal:3000
 }
 
-{$APEX_DOMAIN:maqouti.app} {
-	redir https://{$SITE_DOMAIN:www.maqouti.app}{uri} permanent
+{$APEX_DOMAIN:maquaty.app} {
+	redir https://{$SITE_DOMAIN:www.maquaty.app}{uri} permanent
 }
 
-{$SITE_DOMAIN:www.maqouti.app} {
+{$SITE_DOMAIN:www.maquaty.app} {
 	import security_headers
 	encode zstd gzip
 	root * /srv/website

@@ -3,6 +3,7 @@ import { PaymentType, Prisma, StoreOwnerStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccountingService } from '../accounting/accounting.service';
 import { ApiError } from '../common/api-error';
+import { AccountStatusGuard } from '../common/account-status.guard';
 import { assertValidQuantityForUnit, isGramUnit, isKiloUnit, isWeightUnit } from '../common/unit-validation';
 import { formatQuantityDisplay } from '../common/quantity-formatter';
 import { AuthenticatedUser } from '../common/types';
@@ -14,10 +15,33 @@ export class SalesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounting: AccountingService,
-  ) {}
+  ) { }
 
   async create(user: AuthenticatedUser, dto: CreateSaleDto) {
     const storeOwnerId = user.storeOwnerId!;
+    const isUuid = (val?: string) =>
+      typeof val === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(val);
+    const candidateSaleId = isUuid(dto.id) ? dto.id : isUuid(dto.clientOpId) ? dto.clientOpId : undefined;
+
+    if (candidateSaleId) {
+      const existingSale = await this.prisma.sale.findFirst({
+        where: { id: candidateSaleId, storeOwnerId },
+        include: { item: { select: { name: true, unit: true } } },
+      });
+      if (existingSale) {
+        const currentOwner = await this.prisma.storeOwner.findUniqueOrThrow({
+          where: { id: storeOwnerId },
+          select: { status: true },
+        });
+        return {
+          sale: serializeSale(existingSale, existingSale.item?.unit),
+          account_status: currentOwner.status,
+          item_name: existingSale.item?.name ?? '',
+        };
+      }
+    }
+
     let quantity = new Prisma.Decimal(dto.quantity);
     const amount = new Prisma.Decimal(dto.amount);
 
@@ -30,14 +54,26 @@ export class SalesService {
       }
     }
 
-    // 0) فحص اعتماد الإغلاق اليومي (BR-057): لا مبيعات بعد الإغلاق
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // 0) تحديد تاريخ البيع الفعلي وفحص اعتماد الإغلاق اليومي (BR-057): لا مبيعات بعد الإغلاق
+    let effectiveSoldAt = new Date();
+    if (dto.soldAt) {
+      const parsed = new Date(dto.soldAt);
+      if (isNaN(parsed.getTime())) {
+        throw ApiError.badRequest('VALIDATION_ERROR', 'تاريخ البيع غير صالح.');
+      }
+      const maxAllowedFuture = new Date(Date.now() + 5 * 60 * 1000); // 5 دقائق سماحية الفارق الزمني (Server Clock Skew)
+      if (parsed.getTime() > maxAllowedFuture.getTime()) {
+        throw ApiError.badRequest('VALIDATION_ERROR', 'تاريخ البيع لا يمكن أن يكون في المستقبل.');
+      }
+      effectiveSoldAt = parsed;
+    }
+
+    const targetDay = startOfDay(effectiveSoldAt);
     const closedClosing = await this.prisma.dailyClosing.findFirst({
       where: {
         storeOwnerId,
         workerId: user.role === 'WORKER' ? user.workerId : null,
-        closingDate: today,
+        closingDate: targetDay,
         status: 'CLOSED',
       },
     });
@@ -66,9 +102,9 @@ export class SalesService {
       const walletAccount = wallet.accountCode
         ? { code: wallet.accountCode }
         : await this.prisma.chartOfAccount.findFirst({
-            where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet.name}` } },
-            select: { code: true },
-          });
+          where: { storeOwnerId, accountType: 'ASSET', name: { startsWith: `محفظة: ${wallet.name}` } },
+          select: { code: true },
+        });
       walletAccountCode = walletAccount?.code ?? '1100'; // احتياط: حساب المحافظ الأب
     }
 
@@ -87,8 +123,17 @@ export class SalesService {
 
     const ownerSettings = await this.prisma.storeOwner.findUniqueOrThrow({
       where: { id: storeOwnerId },
-      select: { defaultCostingMethod: true },
+      select: { defaultCostingMethod: true, status: true },
     });
+    if (ownerSettings.status === 'TRIAL_EXPIRED' || ownerSettings.status === 'EXPIRED' || ownerSettings.status === 'SUSPENDED') {
+      const reason = ownerSettings.status === 'TRIAL_EXPIRED' ? 'TRIAL_EXPIRED' : ownerSettings.status === 'EXPIRED' ? 'SUBSCRIPTION_EXPIRED' : 'ACCOUNT_SUSPENDED';
+      const { phone, whatsapp } = await this.getSupportContacts();
+      throw ApiError.locked(reason, `الحساب موقوف أو انتهت الفترة التجريبية. للتواصل والدعم: ${phone}`, {
+        contact_phone: phone,
+        contact_whatsapp: whatsapp,
+      });
+    }
+    const warningThreshold = await this.getTrialWarningThreshold();
 
     // المعاملة الذرّية: قفل صف الصنف + قفل صف المالك (العداد) + كل الكتابات
     const result = await this.prisma.$transaction(async (tx) => {
@@ -160,6 +205,29 @@ export class SalesService {
 
       // 4) سقف الائتمان Hard Block (R-19): لا حفظ، لا خصم مخزون، لا قيد
       if (dto.paymentType === PaymentType.CREDIT && customer) {
+        const lockedCustomers = await tx.$queryRaw<
+          Array<{
+            id: string;
+            name: string;
+            credit_limit: Prisma.Decimal | null;
+            deleted_at: Date | null;
+          }>
+        >(
+          Prisma.sql`SELECT id, name, credit_limit, deleted_at
+                     FROM credit_customers
+                     WHERE id = ${customer.id}::uuid
+                       AND store_owner_id = ${storeOwnerId}::uuid
+                     FOR UPDATE`,
+        );
+        const lockedCustomer = lockedCustomers[0];
+        if (!lockedCustomer || lockedCustomer.deleted_at) {
+          throw ApiError.notFound('عميل الآجل غير موجود.');
+        }
+        customer = {
+          id: lockedCustomer.id,
+          name: lockedCustomer.name,
+          creditLimit: lockedCustomer.credit_limit,
+        };
         if (customer.creditLimit !== null) {
           const debts = await this.customerTotalDebt(tx, customer.id);
           if (debts.plus(amount).gt(customer.creditLimit)) {
@@ -175,21 +243,27 @@ export class SalesService {
         priceDifferenceLoss = item.sell_price.minus(unitPrice).mul(quantity).toDecimalPlaces(2);
       }
 
-      // 4.5) احتساب تكلفة البضاعة المباعة (COGS) واستهلاك طبقات FIFO عند تفعيلها
+      // 4.5) احتساب تكلفة البضاعة المباعة (COGS) واستهلاك طبقات الشراء النشطة بترتيب FIFO
       let cogs = item.cost_price.mul(quantity).toDecimalPlaces(2);
-      const fifoLayers = await tx.purchaseItem.findMany({
-        where: {
-          storeOwnerId,
-          itemId: item.id,
-          remainingFifoQty: { gt: 0 },
-          purchaseInvoice: { status: 'POSTED' },
-        },
-        orderBy: { createdAt: 'asc' },
-      });
+      const fifoLayers = await tx.$queryRaw<
+        Array<{
+          id: string;
+          remaining_fifo_qty: Prisma.Decimal;
+          effective_base_unit_cost: Prisma.Decimal;
+        }>
+      >(Prisma.sql`SELECT pi.id, pi.remaining_fifo_qty, pi.effective_base_unit_cost
+                   FROM purchase_items pi
+                   JOIN purchase_invoices pinv ON pinv.id = pi.purchase_invoice_id
+                   WHERE pi.store_owner_id = ${storeOwnerId}::uuid
+                     AND pi.item_id = ${item.id}::uuid
+                     AND pi.remaining_fifo_qty > 0
+                     AND pinv.status = 'POSTED'
+                   ORDER BY pinv.invoice_date ASC, pinv.created_at ASC, pi.created_at ASC, pi.id ASC
+                   FOR UPDATE OF pi`);
 
       if (fifoLayers.length > 0) {
         const totalLayeredQty = fifoLayers.reduce(
-          (s, l) => s.plus(l.remainingFifoQty),
+          (s, l) => s.plus(new Prisma.Decimal(l.remaining_fifo_qty)),
           new Prisma.Decimal(0),
         );
         const unlayeredOldestQty = Prisma.Decimal.max(
@@ -199,6 +273,7 @@ export class SalesService {
 
         let qtyToConsume = quantity;
         let fifoCostAcc = new Prisma.Decimal(0);
+        let lastConsumedLayerCost = item.cost_price;
 
         if (unlayeredOldestQty.gt(0)) {
           const fromUnlayered = Prisma.Decimal.min(unlayeredOldestQty, qtyToConsume);
@@ -208,46 +283,58 @@ export class SalesService {
 
         let nextFrontLayerCost: Prisma.Decimal | null = null;
         for (const layer of fifoLayers) {
+          const layerRemQty = new Prisma.Decimal(layer.remaining_fifo_qty);
+          const layerUnitCost = new Prisma.Decimal(layer.effective_base_unit_cost);
           if (qtyToConsume.gt(0)) {
-            const consumed = Prisma.Decimal.min(layer.remainingFifoQty, qtyToConsume);
-            fifoCostAcc = fifoCostAcc.plus(consumed.mul(layer.effectiveBaseUnitCost));
-            const remLayer = layer.remainingFifoQty.minus(consumed);
+            const consumed = Prisma.Decimal.min(layerRemQty, qtyToConsume);
+            fifoCostAcc = fifoCostAcc.plus(consumed.mul(layerUnitCost));
+            const remLayer = layerRemQty.minus(consumed);
+            lastConsumedLayerCost = layerUnitCost;
             await tx.purchaseItem.update({
               where: { id: layer.id },
               data: { remainingFifoQty: remLayer },
             });
             qtyToConsume = qtyToConsume.minus(consumed);
             if (remLayer.gt(0) && nextFrontLayerCost === null) {
-              nextFrontLayerCost = layer.effectiveBaseUnitCost;
+              nextFrontLayerCost = layerUnitCost;
             }
           } else if (nextFrontLayerCost === null) {
-            nextFrontLayerCost = layer.effectiveBaseUnitCost;
+            nextFrontLayerCost = layerUnitCost;
           }
         }
 
-        if (ownerSettings.defaultCostingMethod === 'FIFO') {
-          cogs = fifoCostAcc.toDecimalPlaces(2);
-          // إذا استُهلكت الدفعة الأقدم بالكامل، حدّث items.cost_price لتكلفة الدفعة النشطة التالية
-          const remainingUnlayered = unlayeredOldestQty.minus(
-            Prisma.Decimal.min(unlayeredOldestQty, quantity),
-          );
-          if (remainingUnlayered.lte(0) && nextFrontLayerCost !== null) {
+        if (qtyToConsume.gt(0)) {
+          fifoCostAcc = fifoCostAcc.plus(qtyToConsume.mul(item.cost_price));
+        }
+
+        cogs = fifoCostAcc.toDecimalPlaces(2);
+
+        // إذا استُهلكت الدفعة الأقدم بالكامل، حدّث items.cost_price لتكلفة الدفعة النشطة التالية (أو آخر دفعة مستهلكة)
+        const remainingUnlayered = unlayeredOldestQty.minus(
+          Prisma.Decimal.min(unlayeredOldestQty, quantity),
+        );
+        if (remainingUnlayered.lte(0)) {
+          const updatedActiveCost = nextFrontLayerCost ?? lastConsumedLayerCost;
+          if (!updatedActiveCost.eq(item.cost_price)) {
             await tx.item.update({
               where: { id: item.id },
-              data: { costPrice: nextFrontLayerCost },
+              data: { costPrice: updatedActiveCost },
             });
           }
         }
       }
 
       // 5) خصم الكمية (ضمن نفس القفل والمعاملة)
-      await tx.$executeRaw(Prisma.sql`UPDATE items SET quantity = quantity - ${quantity}, updated_at = now()
-                                      WHERE id = ${dto.itemId}::uuid`);
+      await tx.item.update({
+        where: { id: dto.itemId },
+        data: { quantity: { decrement: quantity } },
+      });
       // قاعدة سلامة quantity >= 0 مفروضة بقيد CHECK في قاعدة البيانات — الانتهاك يفشل المعاملة كلها
 
       // 6) سجل البيع
       const sale = await tx.sale.create({
         data: {
+          ...(candidateSaleId ? { id: candidateSaleId } : {}),
           storeOwnerId,
           workerId: user.role === 'WORKER' ? user.workerId! : null,
           itemId: dto.itemId,
@@ -262,7 +349,7 @@ export class SalesService {
           emergencyReason: isEmergency ? dto.emergencyReason : null,
           emergencyOverridePrice: isEmergency ? unitPrice : null,
           priceDifferenceLoss,
-          soldAt: new Date(),
+          soldAt: effectiveSoldAt,
         },
       });
 
@@ -276,14 +363,14 @@ export class SalesService {
             : '1200';
       const revenueLines = isEmergency && priceDifferenceLoss.gt(0)
         ? [ // المبيعات بالسعر العادي؛ النقد الفعلي + الخسارة يوازنانه (R-16 قيد مستقل سلوكياً)
-            { accountCode: debitAccount, debit: amount.toNumber(), description: 'تحصيل بيع اضطراري' },
-            { accountCode: '5450', debit: priceDifferenceLoss.toNumber(), description: `خسارة بيع اضطراري: ${dto.emergencyReason}` },
-            { accountCode: '4000', credit: item.sell_price.mul(quantity).toDecimalPlaces(2).toNumber(), description: 'مبيعات بالسعر العادي' },
-          ]
+          { accountCode: debitAccount, debit: amount.toNumber(), description: 'تحصيل بيع اضطراري' },
+          { accountCode: '5450', debit: priceDifferenceLoss.toNumber(), description: `خسارة بيع اضطراري: ${dto.emergencyReason}` },
+          { accountCode: '4000', credit: item.sell_price.mul(quantity).toDecimalPlaces(2).toNumber(), description: 'مبيعات بالسعر العادي' },
+        ]
         : [
-            { accountCode: debitAccount, debit: amount.toNumber(), description: 'تحصيل بيع' },
-            { accountCode: '4000', credit: amount.toNumber(), description: 'مبيعات' },
-          ];
+          { accountCode: debitAccount, debit: amount.toNumber(), description: 'تحصيل بيع' },
+          { accountCode: '4000', credit: amount.toNumber(), description: 'مبيعات' },
+        ];
       await this.accounting.createBalancedEntries(tx, {
         storeOwnerId,
         entryDate,
@@ -311,6 +398,14 @@ export class SalesService {
       >(Prisma.sql`SELECT trial_sales_used, trial_sales_limit, status FROM store_owners
                    WHERE id = ${storeOwnerId}::uuid FOR UPDATE`);
       const owner = lockedOwners[0];
+      if (owner.status === 'TRIAL_EXPIRED' || owner.status === 'EXPIRED' || owner.status === 'SUSPENDED') {
+        const reason = owner.status === 'TRIAL_EXPIRED' ? 'TRIAL_EXPIRED' : owner.status === 'EXPIRED' ? 'SUBSCRIPTION_EXPIRED' : 'ACCOUNT_SUSPENDED';
+        const { phone, whatsapp } = await this.getSupportContacts();
+        throw ApiError.locked(reason, `الحساب موقوف أو انتهت الفترة التجريبية. للتواصل والدعم: ${phone}`, {
+          contact_phone: phone,
+          contact_whatsapp: whatsapp,
+        });
+      }
       let accountStatus = owner.status;
       if (owner.trial_sales_used < owner.trial_sales_limit) {
         const nextUsed = owner.trial_sales_used + 1;
@@ -318,7 +413,7 @@ export class SalesService {
         let nextStatus: StoreOwnerStatus = owner.status as StoreOwnerStatus;
         if (nextUsed >= owner.trial_sales_limit) {
           nextStatus = 'TRIAL_EXPIRED'; // BR-042: قفل كامل فوري
-        } else if (remaining <= this.trialWarningThreshold && (owner.status === 'TRIAL' || owner.status === 'TRIAL_WARNING')) {
+        } else if (remaining <= warningThreshold && (owner.status === 'TRIAL' || owner.status === 'TRIAL_WARNING')) {
           nextStatus = 'TRIAL_WARNING'; // BR-041
         }
         await tx.storeOwner.update({
@@ -327,12 +422,17 @@ export class SalesService {
             trialSalesUsed: nextUsed,
             ...(nextStatus !== owner.status ? { status: nextStatus } : {}),
           },
+          select: { id: true },
         });
         accountStatus = nextStatus;
       }
 
       return { sale, accountStatus, mergedItemName: item.name, itemUnit: item.unit };
     });
+
+    if (result.accountStatus === 'TRIAL_EXPIRED') {
+      AccountStatusGuard.invalidateOwner(storeOwnerId);
+    }
 
     return {
       sale: serializeSale(result.sale, result.itemUnit),
@@ -442,10 +542,11 @@ export class SalesService {
       })),
     ].sort((a, b) => b.at.getTime() - a.at.getTime());
 
-    // شريط الإجماليات أسفل الشاشة: نقد/إلكتروني (+ المصروفات تُضاف في مرحلة المصروفات)
+    // شريط الإجماليات أسفل الشاشة: نقد/إلكتروني + مصروفات وسلف اليوم
     const cash = sumAmounts(operations.filter((o) => o.payment_type === 'CASH').map((o) => o.amount));
     const electronic = sumAmounts(operations.filter((o) => o.payment_type === 'ELECTRONIC').map((o) => o.amount));
-    return { operations, totals: { cash, electronic, expenses: new Prisma.Decimal(0) } };
+    const expenses = await this.computeDayExpensesTotal(user.storeOwnerId!, entryDate, end, effectiveWorkerId);
+    return { operations, totals: { cash, electronic, expenses } };
   }
 
   // ─── أدوات ──────────────────────────────────────────────────────────────
@@ -521,8 +622,90 @@ export class SalesService {
       .minus(aggReturns._sum.amount ?? 0);
   }
 
-  // عتبة تحذير التجربة (BR-041) — تُقرأ من الإعدادات مرة واحدة عند إنشاء الخدمة للطلب
+  // عتبة تحذير التجربة (BR-041) — تُقرأ ديناميكياً من system_settings مع قيمة احتياطية 30
   private trialWarningThreshold = 30;
+
+  private async getTrialWarningThreshold(): Promise<number> {
+    const setting = await this.prisma.systemSetting?.findUnique({
+      where: { key: 'trial_warning_threshold' },
+    });
+    const raw: unknown = setting?.value;
+    const value = typeof raw === 'object' && raw !== null && 'v' in raw ? (raw as { v?: unknown }).v : raw;
+    const num = Number(value);
+    return Number.isFinite(num) && num > 0 ? num : this.trialWarningThreshold;
+  }
+
+  private async computeDayExpensesTotal(
+    storeOwnerId: string,
+    entryDate: Date,
+    end: Date,
+    effectiveWorkerId?: string,
+  ): Promise<Prisma.Decimal> {
+    if (effectiveWorkerId) {
+      const workerAdv = await this.prisma.workerAdvance.aggregate({
+        where: {
+          storeOwnerId,
+          workerId: effectiveWorkerId,
+          recordedAt: { gte: entryDate, lt: end },
+        },
+        _sum: { amount: true },
+      });
+      return (workerAdv._sum.amount ?? new Prisma.Decimal(0)).toDecimalPlaces(2);
+    }
+
+    const [rentAgg, utilAgg, empPayAgg, empAdvAgg, workAdvAgg, expSettleAgg] = await Promise.all([
+      this.prisma.rentRecord.aggregate({
+        where: { storeOwnerId, paidAt: { gte: entryDate, lt: end } },
+        _sum: { paidAmount: true },
+      }),
+      this.prisma.utilityPayment.aggregate({
+        where: { storeOwnerId, paidAt: { gte: entryDate, lt: end } },
+        _sum: { paidAmount: true },
+      }),
+      this.prisma.employeePayment.aggregate({
+        where: { storeOwnerId, paidAt: { gte: entryDate, lt: end } },
+        _sum: { paidAmount: true },
+      }),
+      this.prisma.employeeAdvance.aggregate({
+        where: { storeOwnerId, createdAt: { gte: entryDate, lt: end } },
+        _sum: { amount: true },
+      }),
+      this.prisma.workerAdvance.aggregate({
+        where: { storeOwnerId, recordedAt: { gte: entryDate, lt: end } },
+        _sum: { amount: true },
+      }),
+      this.prisma.expenseSettlement.aggregate({
+        where: { storeOwnerId, paidAt: { gte: entryDate, lt: end } },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    return sumAmounts([
+      rentAgg._sum.paidAmount ?? new Prisma.Decimal(0),
+      utilAgg._sum.paidAmount ?? new Prisma.Decimal(0),
+      empPayAgg._sum.paidAmount ?? new Prisma.Decimal(0),
+      empAdvAgg._sum.amount ?? new Prisma.Decimal(0),
+      workAdvAgg._sum.amount ?? new Prisma.Decimal(0),
+      expSettleAgg._sum.amount ?? new Prisma.Decimal(0),
+    ]);
+  }
+
+  private async getSupportContacts(): Promise<{ phone: string; whatsapp: string }> {
+    const defaultPhone = '735717710';
+    try {
+      const phoneRow = await this.prisma.systemSetting.findUnique({ where: { key: 'contact_phone' } });
+      const waRow = await this.prisma.systemSetting.findUnique({ where: { key: 'contact_whatsapp' } });
+      const extract = (raw: unknown) => {
+        const val = typeof raw === 'object' && raw !== null && 'v' in raw ? (raw as { v?: unknown }).v : raw;
+        return typeof val === 'string' && val.trim() !== '' ? val.trim() : null;
+      };
+      const phone = extract(phoneRow?.value) ?? defaultPhone;
+      const whatsapp = extract(waRow?.value) ?? phone;
+      return { phone, whatsapp };
+    } catch {
+      return { phone: defaultPhone, whatsapp: defaultPhone };
+    }
+  }
 }
 
 function sumAmounts(values: Prisma.Decimal[]): Prisma.Decimal {

@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { EmergencyPriceMode, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AccountingService } from '../accounting/accounting.service';
 import { ApiError } from '../common/api-error';
 import { assertValidQuantityForUnit } from '../common/unit-validation';
 import { formatQuantityDisplay } from '../common/quantity-formatter';
@@ -10,11 +11,20 @@ import { CreateItemDto, UpdateItemDto } from './dto/items.dto';
 // الأصناف — API_SPEC القسم 3 + آلية التكلفة لنفس اليوم وقاعدة القات 24-48 ساعة
 @Injectable()
 export class ItemsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly accounting?: AccountingService,
+  ) {}
 
   async create(storeOwnerId: string, dto: CreateItemDto) {
     const trimmedName = dto.name.trim();
     const trimmedUnit = dto.unit.trim();
+    if (dto.quantity < 0) {
+      throw ApiError.badRequest('VALIDATION_ERROR', 'الكمية لا تقبل رقماً سالباً.');
+    }
+    if (dto.costPrice < 0 || dto.sellPrice < 0) {
+      throw ApiError.badRequest('VALIDATION_ERROR', 'الأسعار لا تقبل أرقاماً سالبة.');
+    }
     assertValidQuantityForUnit(trimmedUnit, dto.quantity);
     this.validateEmergencyPolicy(
       dto.emergencyPriceMode,
@@ -29,6 +39,12 @@ export class ItemsService {
       // قرار معتمد: تحذير فقط دون رفض (النقطة 8 مغلقة)
       warnings.push('سعر البيع أقل من سعر التكلفة — تأكد أن هذا مقصود.');
     }
+
+    const newQty = Number(dto.quantity);
+    const newCost = Number(dto.costPrice);
+    const addedInventoryCost = new Prisma.Decimal(newQty)
+      .mul(new Prisma.Decimal(newCost))
+      .toDecimalPlaces(2);
 
     // فحص وجود نفس الصنف (الاسم + الوحدة) في نفس اليوم
     const existingSameDay = await this.prisma.item.findFirst({
@@ -45,16 +61,13 @@ export class ItemsService {
     if (existingSameDay) {
       const oldQty = Number(existingSameDay.quantity);
       const oldCost = Number(existingSameDay.costPrice);
-      const newQty = Number(dto.quantity);
-      const newCost = Number(dto.costPrice);
 
-      // 1) قاعدة القات (24-48 ساعة / نفاد الكمية = 0): اعتماد السعر الجديد تلقائياً دون نافذة منبثقة
-      if (oldQty <= 0) {
+      // تعريف الصنف بكمية صفرية دون توريد مخزون
+      if (newQty <= 0) {
         const item = await this.prisma.item.update({
           where: { id: existingSameDay.id },
           data: {
-            quantity: new Prisma.Decimal(newQty),
-            costPrice: new Prisma.Decimal(newCost),
+            ...(oldQty <= 0 ? { costPrice: new Prisma.Decimal(newCost) } : {}),
             sellPrice: new Prisma.Decimal(dto.sellPrice),
             ...(dto.emergencyPriceMode !== undefined ? { emergencyPriceMode: dto.emergencyPriceMode } : {}),
             ...(dto.emergencyPricePlusFixed !== undefined ? { emergencyPricePlusFixed: dto.emergencyPricePlusFixed } : {}),
@@ -66,14 +79,56 @@ export class ItemsService {
         return { item, merged: true, warnings };
       }
 
+      // 1) قاعدة القات (24-48 ساعة / نفاد الكمية = 0): اعتماد السعر الجديد تلقائياً دون نافذة منبثقة
+      if (oldQty <= 0) {
+        const item = await this.prisma.$transaction(async (tx) => {
+          await tx.purchaseItem.updateMany({
+            where: { storeOwnerId, itemId: existingSameDay.id, remainingFifoQty: { gt: 0 } },
+            data: { remainingFifoQty: new Prisma.Decimal(0) },
+          });
+          const updated = await tx.item.update({
+            where: { id: existingSameDay.id },
+            data: {
+              quantity: new Prisma.Decimal(newQty),
+              costPrice: new Prisma.Decimal(newCost),
+              sellPrice: new Prisma.Decimal(dto.sellPrice),
+              ...(dto.emergencyPriceMode !== undefined ? { emergencyPriceMode: dto.emergencyPriceMode } : {}),
+              ...(dto.emergencyPricePlusFixed !== undefined ? { emergencyPricePlusFixed: dto.emergencyPricePlusFixed } : {}),
+              ...(dto.emergencyPricePlusPercent !== undefined ? { emergencyPricePlusPercent: dto.emergencyPricePlusPercent } : {}),
+              ...(dto.emergencyPriceMin !== undefined ? { emergencyPriceMin: dto.emergencyPriceMin } : {}),
+              ...(dto.emergencyPriceMax !== undefined ? { emergencyPriceMax: dto.emergencyPriceMax } : {}),
+            },
+          });
+          await this.recordDirectStockJournalEntry(tx, {
+            storeOwnerId,
+            entryDate,
+            itemId: updated.id,
+            itemName: trimmedName,
+            addedCost: addedInventoryCost,
+          });
+          return updated;
+        });
+        return { item, merged: true, warnings };
+      }
+
       // 2) نفس سعر التكلفة في نفس اليوم -> دمج تلقائي (BR-003)
       if (Math.abs(oldCost - newCost) < 0.005) {
-        const item = await this.prisma.item.update({
-          where: { id: existingSameDay.id },
-          data: {
-            quantity: { increment: new Prisma.Decimal(newQty) },
-            sellPrice: new Prisma.Decimal(dto.sellPrice),
-          },
+        const item = await this.prisma.$transaction(async (tx) => {
+          const updated = await tx.item.update({
+            where: { id: existingSameDay.id },
+            data: {
+              quantity: { increment: new Prisma.Decimal(newQty) },
+              sellPrice: new Prisma.Decimal(dto.sellPrice),
+            },
+          });
+          await this.recordDirectStockJournalEntry(tx, {
+            storeOwnerId,
+            entryDate,
+            itemId: updated.id,
+            itemName: trimmedName,
+            addedCost: addedInventoryCost,
+          });
+          return updated;
         });
         return { item, merged: true, warnings };
       }
@@ -114,39 +169,104 @@ export class ItemsService {
         nextCostPrice = oldCost;
       }
 
-      const item = await this.prisma.item.update({
-        where: { id: existingSameDay.id },
-        data: {
-          quantity: { increment: new Prisma.Decimal(newQty) },
-          costPrice: new Prisma.Decimal(nextCostPrice),
-          sellPrice: new Prisma.Decimal(dto.sellPrice),
-          ...(dto.emergencyPriceMode !== undefined ? { emergencyPriceMode: dto.emergencyPriceMode } : {}),
-          ...(dto.emergencyPricePlusFixed !== undefined ? { emergencyPricePlusFixed: dto.emergencyPricePlusFixed } : {}),
-          ...(dto.emergencyPricePlusPercent !== undefined ? { emergencyPricePlusPercent: dto.emergencyPricePlusPercent } : {}),
-          ...(dto.emergencyPriceMin !== undefined ? { emergencyPriceMin: dto.emergencyPriceMin } : {}),
-          ...(dto.emergencyPriceMax !== undefined ? { emergencyPriceMax: dto.emergencyPriceMax } : {}),
-        },
+      const item = await this.prisma.$transaction(async (tx) => {
+        if (dto.costingMethod === 'WEIGHTED_AVERAGE' || dto.costingMethod === 'LAST_PRICE') {
+          await tx.purchaseItem.updateMany({
+            where: {
+              storeOwnerId,
+              itemId: existingSameDay.id,
+              remainingFifoQty: { gt: 0 },
+            },
+            data: { effectiveBaseUnitCost: new Prisma.Decimal(nextCostPrice) },
+          });
+        }
+        const updated = await tx.item.update({
+          where: { id: existingSameDay.id },
+          data: {
+            quantity: { increment: new Prisma.Decimal(newQty) },
+            costPrice: new Prisma.Decimal(nextCostPrice),
+            sellPrice: new Prisma.Decimal(dto.sellPrice),
+            ...(dto.emergencyPriceMode !== undefined ? { emergencyPriceMode: dto.emergencyPriceMode } : {}),
+            ...(dto.emergencyPricePlusFixed !== undefined ? { emergencyPricePlusFixed: dto.emergencyPricePlusFixed } : {}),
+            ...(dto.emergencyPricePlusPercent !== undefined ? { emergencyPricePlusPercent: dto.emergencyPricePlusPercent } : {}),
+            ...(dto.emergencyPriceMin !== undefined ? { emergencyPriceMin: dto.emergencyPriceMin } : {}),
+            ...(dto.emergencyPriceMax !== undefined ? { emergencyPriceMax: dto.emergencyPriceMax } : {}),
+          },
+        });
+        await this.recordDirectStockJournalEntry(tx, {
+          storeOwnerId,
+          entryDate,
+          itemId: updated.id,
+          itemName: trimmedName,
+          addedCost: addedInventoryCost,
+        });
+        return updated;
       });
       return { item, merged: true, costing_method_used: dto.costingMethod, warnings };
     }
 
-    const item = await this.prisma.item.create({
-      data: {
-        storeOwnerId,
-        name: trimmedName,
-        unit: trimmedUnit,
-        quantity: dto.quantity,
-        costPrice: dto.costPrice,
-        sellPrice: dto.sellPrice,
-        entryDate,
-        emergencyPriceMode: dto.emergencyPriceMode ?? (await this.defaultEmergencyMode()),
-        emergencyPricePlusFixed: dto.emergencyPricePlusFixed,
-        emergencyPricePlusPercent: dto.emergencyPricePlusPercent,
-        emergencyPriceMin: dto.emergencyPriceMin,
-        emergencyPriceMax: dto.emergencyPriceMax,
-      },
+    const defaultMode = dto.emergencyPriceMode ?? (await this.defaultEmergencyMode());
+    const item = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.item.create({
+        data: {
+          storeOwnerId,
+          name: trimmedName,
+          unit: trimmedUnit,
+          quantity: dto.quantity,
+          costPrice: dto.costPrice,
+          sellPrice: dto.sellPrice,
+          entryDate,
+          emergencyPriceMode: defaultMode,
+          emergencyPricePlusFixed: dto.emergencyPricePlusFixed,
+          emergencyPricePlusPercent: dto.emergencyPricePlusPercent,
+          emergencyPriceMin: dto.emergencyPriceMin,
+          emergencyPriceMax: dto.emergencyPriceMax,
+        },
+      });
+      if (newQty > 0) {
+        await this.recordDirectStockJournalEntry(tx, {
+          storeOwnerId,
+          entryDate,
+          itemId: created.id,
+          itemName: trimmedName,
+          addedCost: addedInventoryCost,
+        });
+      }
+      return created;
     });
     return { item, merged: false, warnings };
+  }
+
+  private async recordDirectStockJournalEntry(
+    tx: Prisma.TransactionClient,
+    params: {
+      storeOwnerId: string;
+      entryDate: Date;
+      itemId: string;
+      itemName: string;
+      addedCost: Prisma.Decimal;
+    },
+  ) {
+    if (!this.accounting || params.addedCost.lte(0)) return;
+    const amountNum = params.addedCost.toNumber();
+    await this.accounting.createBalancedEntries(tx, {
+      storeOwnerId: params.storeOwnerId,
+      entryDate: params.entryDate,
+      referenceType: 'PURCHASE',
+      referenceId: params.itemId,
+      lines: [
+        {
+          accountCode: '1300',
+          debit: amountNum,
+          description: `توريد مخزون مباشر للصنف (${params.itemName})`,
+        },
+        {
+          accountCode: '3000',
+          credit: amountNum,
+          description: `تمويل مخزون مباشر للصنف (${params.itemName})`,
+        },
+      ],
+    });
   }
 
   // جدول أصناف اليوم (ITEMS_MANAGE) — للمالك حصراً
@@ -159,10 +279,10 @@ export class ItemsService {
     return items.map(toOwnerView);
   }
 
-  // المخزون (INVENTORY) — للمالك: كامل؛ للعامل: بلا قيمة متبقية إلا بصلاحية؛ لا cost_price للعامل أبداً
+  // المخزون (INVENTORY) — للمالك: كامل؛ للعامل: حسب الصلاحيات الممنوحة (showSellPrices / showCostPrice)
   async inventory(
     storeOwnerId: string,
-    opts: { isWorker: boolean; showSellPrices: boolean },
+    opts: { isWorker: boolean; showSellPrices: boolean; showCostPrice?: boolean },
     search?: string,
     limitParam?: number,
     offsetParam?: number,
@@ -184,6 +304,24 @@ export class ItemsService {
     });
 
     return items.map((it) => {
+      let emergMin: number | null = null;
+      let emergMax: number | null = null;
+      if (it.emergencyPriceMode === 'COST_ONLY') {
+        emergMin = Number(it.costPrice);
+        emergMax = Number(it.costPrice);
+      } else if (it.emergencyPriceMode === 'COST_PLUS') {
+        const fixed = it.emergencyPricePlusFixed;
+        const percent = it.emergencyPricePlusPercent;
+        const margin = fixed !== null
+          ? fixed
+          : it.costPrice.mul(percent ?? 0).div(100).toDecimalPlaces(2);
+        emergMin = Number(it.costPrice.add(margin));
+        emergMax = null;
+      } else if (it.emergencyPriceMode === 'RANGE_OR_OPEN') {
+        emergMin = it.emergencyPriceMin !== null ? Number(it.emergencyPriceMin) : null;
+        emergMax = it.emergencyPriceMax !== null ? Number(it.emergencyPriceMax) : null;
+      }
+
       const base: Record<string, unknown> = {
         item_id: it.id,
         name: it.name,
@@ -191,14 +329,19 @@ export class ItemsService {
         remaining_qty: it.quantity,
         quantity_display: formatQuantityDisplay(it.quantity, it.unit),
         sell_price: it.sellPrice,
+        emergency_price_mode: it.emergencyPriceMode,
+        emergency_price_plus_fixed: it.emergencyPricePlusFixed,
+        emergency_price_plus_percent: it.emergencyPricePlusPercent,
+        emergency_price_min: it.emergencyPriceMin,
+        emergency_price_max: it.emergencyPriceMax,
+        emergency_min_price: emergMin,
+        emergency_max_price: emergMax,
       };
       if (!opts.isWorker || opts.showSellPrices) {
         base.remaining_value = mul(it.quantity, it.sellPrice);
       }
-      // حماية خادمية أساسية: cost_price لا يُعاد لأي Worker إطلاقاً
-      if (!opts.isWorker) {
+      if (!opts.isWorker || opts.showCostPrice) {
         base.cost_price = it.costPrice;
-        base.emergency_price_mode = it.emergencyPriceMode;
       }
       return base;
     });

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/quantity_formatter.dart';
 import '../../providers/sales_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// شاشة سجل العمليات والمرتجع — الشاشة 8 (OPERATIONS_LOG / 08-operations-log.jpg)
@@ -27,6 +28,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
   }
 
   void _showReturnDialog(SaleRecord sale) {
+    final symbol = context.read<StoreSettingsProvider>().currencySymbol;
     final isKilo = isKiloUnit(sale.unit);
     String returnUnit = 'KILO';
     final qtyController = TextEditingController(
@@ -50,7 +52,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                 children: [
                   Text('الصنف: ${sale.itemName}', style: const TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
-                  Text('المبلغ الأصلي: ${_currencyFormat.format(sale.amount)} ريال'),
+                  Text('المبلغ الأصلي: ${_currencyFormat.format(sale.amount)} $symbol'),
                   Text('الكمية المباعة: ${sale.displayQuantity}', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
                   if (isKilo) ...[
                     const SizedBox(height: 10),
@@ -169,6 +171,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
   @override
   Widget build(BuildContext context) {
     final salesProvider = context.watch<SalesProvider>();
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
     final sales = salesProvider.todaySales;
 
     return AppScaffold(
@@ -176,7 +179,10 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
       currentBottomNavIndex: 3,
       body: salesProvider.isLoading
           ? const Center(child: CircularProgressIndicator())
-          : sales.isEmpty
+          : Column(
+              children: [
+                Expanded(
+                  child: sales.isEmpty
               ? const Center(
                   child: Text(
                     'لا توجد عمليات بيع مسجلة اليوم',
@@ -192,6 +198,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                     itemBuilder: (context, index) {
                       final sale = sales[index];
                       final isEmergency = sale.isEmergencySale;
+                      final isCreditPayment = sale.isCreditPayment;
 
                       return Card(
                         child: Padding(
@@ -204,6 +211,20 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                                 children: [
                                   Row(
                                     children: [
+                                      if (isCreditPayment) ...[
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.primary.withOpacity(0.12),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: const Text(
+                                            'سداد ذمة',
+                                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppColors.primary),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                      ],
                                       Text(
                                         sale.itemName,
                                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
@@ -225,7 +246,7 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                                     ],
                                   ),
                                   Text(
-                                    '${_currencyFormat.format(sale.amount)} ريال',
+                                    '${_currencyFormat.format(sale.amount)} $symbol',
                                     style: const TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 15,
@@ -239,7 +260,9 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(
-                                    'الكمية: ${sale.displayQuantity} · طريقة الدفع: ${sale.paymentType == "CASH" ? "نقد" : sale.paymentType == "ELECTRONIC" ? "إلكتروني" : "آجل"}',
+                                    isCreditPayment
+                                        ? 'سداد دين عميل · طريقة الدفع: ${sale.paymentType == "CASH" ? "نقد" : sale.paymentType == "ELECTRONIC" ? "إلكتروني" : "آجل"}'
+                                        : 'الكمية: ${sale.displayQuantity} · طريقة الدفع: ${sale.paymentType == "CASH" ? "نقد" : sale.paymentType == "ELECTRONIC" ? "إلكتروني" : "آجل"}',
                                     style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
                                   ),
                                   Text(
@@ -256,11 +279,12 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                                     sale.workerName != null ? 'البائع: ${sale.workerName}' : 'البائع: المالك',
                                     style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
                                   ),
-                                  TextButton.icon(
-                                    icon: const Icon(Icons.assignment_return_outlined, size: 16, color: AppColors.lossRed),
-                                    label: const Text('إرجاع', style: TextStyle(color: AppColors.lossRed, fontSize: 12)),
-                                    onPressed: () => _showReturnDialog(sale),
-                                  ),
+                                  if (sale.type == 'SALE')
+                                    TextButton.icon(
+                                      icon: const Icon(Icons.assignment_return_outlined, size: 16, color: AppColors.lossRed),
+                                      label: const Text('إرجاع', style: TextStyle(color: AppColors.lossRed, fontSize: 12)),
+                                      onPressed: () => _showReturnDialog(sale),
+                                    ),
                                 ],
                               ),
                             ],
@@ -269,7 +293,55 @@ class _OperationsLogScreenState extends State<OperationsLogScreen> {
                       );
                     },
                   ),
+                        ),
                 ),
+                if (salesProvider.totals != null)
+                  Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.06),
+                    offset: const Offset(0, -2),
+                    blurRadius: 8,
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _summaryChip('نقد اليوم', salesProvider.totals!.cash, AppColors.cashGreen, symbol),
+                    _summaryChip('إلكتروني', salesProvider.totals!.electronic, AppColors.primary, symbol),
+                    _summaryChip('مصروفات وسلف', salesProvider.totals!.expenses, AppColors.lossRed, symbol),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _summaryChip(String label, double amount, Color color, String symbol) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '${_currencyFormat.format(amount)} $symbol',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ],
     );
   }
 }

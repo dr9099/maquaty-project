@@ -27,6 +27,12 @@ export class SalesController {
     return this.sales.summaryByItem(getRequestUser(req), date);
   }
 
+  @Get('today')
+  @RequireRoles({ roles: ['STORE_OWNER', 'WORKER'] })
+  today(@Req() req: Request, @Query('date') date?: string, @Query('worker_id') workerId?: string) {
+    return this.sales.log(getRequestUser(req), date, workerId);
+  }
+
   @Get('log')
   @RequireRoles({ roles: ['STORE_OWNER', 'WORKER'] })
   log(@Req() req: Request, @Query('date') date?: string, @Query('worker_id') workerId?: string) {

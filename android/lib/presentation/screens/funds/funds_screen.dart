@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/api_endpoints.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/network/api_client.dart';
+import '../../../core/utils/error_formatter.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
@@ -125,7 +126,7 @@ class _FundsScreenState extends State<FundsScreen> {
                       ),
                       DropdownMenuItem(
                         value: 'ELECTRONIC',
-                        child: Text('محفظة إلكترونية (حساب 11xx)'),
+                        child: Text('محفظة إلكترونية'),
                       ),
                     ],
                     onChanged: (v) {
@@ -198,7 +199,7 @@ class _FundsScreenState extends State<FundsScreen> {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           backgroundColor: AppColors.lossRed,
-                          content: Text(e.toString()),
+                          content: Text(formatUserError(e)),
                         ),
                       );
                     }
@@ -252,7 +253,7 @@ class _FundsScreenState extends State<FundsScreen> {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         backgroundColor: AppColors.lossRed,
-                        content: Text(e.toString()),
+                        content: Text(formatUserError(e)),
                       ),
                     );
                   }
@@ -395,7 +396,7 @@ class _FundsScreenState extends State<FundsScreen> {
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             backgroundColor: AppColors.lossRed,
-                            content: Text(e.toString()),
+                            content: Text(formatUserError(e)),
                           ),
                         );
                       }
@@ -535,7 +536,8 @@ class _FundsScreenState extends State<FundsScreen> {
     final double? supplierPayables =
         (_fundsData?['supplier_payables'] as num?)?.toDouble();
     final double? accruedExpenses =
-        (_fundsData?['accrued_expenses'] as num?)?.toDouble();
+        ((_fundsData?['accrued_expenses_payable'] ?? _fundsData?['accrued_expenses']) as num?)
+            ?.toDouble();
     final double? ownerEquityNet =
         (_fundsData?['owner_equity_net'] as num?)?.toDouble();
     final double? netAfterPayables =

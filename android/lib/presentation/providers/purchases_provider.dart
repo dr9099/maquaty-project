@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:uuid/uuid.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/network/api_client.dart';
@@ -82,6 +83,7 @@ class CostingCalculator {
 }
 
 class PurchaseLineInput {
+  final String? id;
   final String? itemId;
   final String itemName;
   final String unit;
@@ -94,6 +96,7 @@ class PurchaseLineInput {
   final double sellPrice;
 
   const PurchaseLineInput({
+    this.id,
     this.itemId,
     required this.itemName,
     this.unit = 'حبة',
@@ -113,6 +116,7 @@ class PurchaseLineInput {
 
   Map<String, dynamic> toApiJson() {
     return {
+      if (id != null && id!.isNotEmpty) 'id': id,
       if (itemId != null && itemId!.isNotEmpty) 'itemId': itemId,
       'itemName': itemName.trim(),
       'unit': unit.trim().isEmpty ? 'حبة' : unit.trim(),
@@ -296,6 +300,7 @@ class PurchaseReturnModel {
   final String refundMethod;
   final String reason;
   final String returnedAt;
+  final String unit;
 
   const PurchaseReturnModel({
     required this.id,
@@ -307,23 +312,31 @@ class PurchaseReturnModel {
     required this.refundMethod,
     required this.reason,
     required this.returnedAt,
+    this.unit = 'حبة',
   });
 
   String get displayQuantity =>
-      quantityDisplay ?? formatQuantityDisplay(quantity, unit: 'كيلو');
+      quantityDisplay ?? formatQuantityDisplay(quantity, unit: unit);
 
   factory PurchaseReturnModel.fromJson(Map<String, dynamic> json) {
     final qty = (json['quantity'] as num?)?.toDouble() ?? 0.0;
+    final unitVal = (json['unit'] ??
+            json['item_unit'] ??
+            json['item']?['unit'] ??
+            'حبة')
+        .toString();
     return PurchaseReturnModel(
       id: (json['id'] ?? '').toString(),
       purchaseItemId: (json['purchase_item_id'] ?? '').toString(),
       itemName: (json['item_name'] ?? '').toString(),
       quantity: qty,
-      quantityDisplay: json['quantity_display'] ?? formatQuantityDisplay(qty, unit: 'كيلو'),
+      quantityDisplay: json['quantity_display'] ??
+          formatQuantityDisplay(qty, unit: unitVal),
       totalAmount: (json['total_amount'] as num?)?.toDouble() ?? 0.0,
       refundMethod: (json['refund_method'] ?? 'DEBT_REDUCTION').toString(),
       reason: (json['reason'] ?? '').toString(),
       returnedAt: (json['returned_at'] ?? '').toString(),
+      unit: unitVal,
     );
   }
 }
@@ -552,8 +565,51 @@ class PurchasesProvider with ChangeNotifier {
   Future<void> _loadOfflinePurchases(String storeOwnerId) async {
     try {
       final db = await AppDatabase.getInstance(storeOwnerId);
+      final savedCurrency =
+          await AppDatabase.getStoreSetting(db, 'currency') ?? 'YER';
+      final savedSymbol =
+          await AppDatabase.getStoreSetting(db, 'currency_symbol') ?? 'ر.ي';
+      _currencySymbol = savedSymbol;
+
       final rows = await db.query('purchase_invoices', orderBy: 'created_at DESC');
-      _purchases = rows.map((r) => PurchaseInvoiceModel.fromJson(r)).toList();
+      final itemRows = await db.query('purchase_items');
+      final returnRows = await db.query('purchase_returns', orderBy: 'returned_at DESC');
+
+      final itemsByInvoice = <String, List<Map<String, dynamic>>>{};
+      final itemNameByPurchaseItemId = <String, String>{};
+      for (final ir in itemRows) {
+        final invId = ir['purchase_invoice_id']?.toString() ?? '';
+        final pItemId = ir['id']?.toString() ?? '';
+        final pItemName = ir['item_name']?.toString() ?? '';
+        if (pItemId.isNotEmpty) {
+          itemNameByPurchaseItemId[pItemId] = pItemName;
+        }
+        itemsByInvoice.putIfAbsent(invId, () => []).add(ir);
+      }
+
+      final returnsByInvoice = <String, List<Map<String, dynamic>>>{};
+      for (final rr in returnRows) {
+        final invId = rr['purchase_invoice_id']?.toString() ?? '';
+        final pItemId = rr['purchase_item_id']?.toString() ?? '';
+        returnsByInvoice.putIfAbsent(invId, () => []).add({
+          ...rr,
+          'item_name': rr['item_name'] ?? itemNameByPurchaseItemId[pItemId] ?? 'صنف',
+        });
+      }
+
+      _purchases = rows.map((r) {
+        final invId = r['id']?.toString() ?? '';
+        final invItems = itemsByInvoice[invId] ?? const [];
+        final invReturns = returnsByInvoice[invId] ?? const [];
+        return PurchaseInvoiceModel.fromJson({
+          ...r,
+          'currency': r['currency'] ?? savedCurrency,
+          'currency_symbol': savedSymbol,
+          'items_count': invItems.length,
+          'items': invItems,
+          'returns': invReturns,
+        });
+      }).toList();
       _totalCount = _purchases.length;
       _summaryTotal = _purchases.fold(0.0, (s, p) => s + p.totalAmount);
       _summaryPaid = _purchases.fold(0.0, (s, p) => s + p.paidAmount);
@@ -561,13 +617,23 @@ class PurchasesProvider with ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<PurchaseInvoiceModel?> fetchPurchaseById(String id) async {
+  Future<PurchaseInvoiceModel?> fetchPurchaseById(
+    String id, {
+    String? storeOwnerId,
+  }) async {
     _errorMessage = null;
     _errorCode = null;
     try {
       final res = await _api.get(ApiEndpoints.purchaseById(id));
-      return PurchaseInvoiceModel.fromJson(Map<String, dynamic>.from(res.data));
+      final detail = PurchaseInvoiceModel.fromJson(Map<String, dynamic>.from(res.data));
+      if (storeOwnerId != null && storeOwnerId.isNotEmpty) {
+        await _cacheOnlinePurchaseDetail(storeOwnerId, detail);
+      }
+      return detail;
     } on ApiException catch (e) {
+      if (e.code == 'NETWORK_ERROR' && storeOwnerId != null && storeOwnerId.isNotEmpty) {
+        return await _loadOfflinePurchaseById(storeOwnerId, id);
+      }
       _errorCode = e.code;
       _errorMessage = e.message;
       notifyListeners();
@@ -575,6 +641,126 @@ class PurchasesProvider with ChangeNotifier {
     } catch (e) {
       _errorMessage = e.toString();
       notifyListeners();
+      return null;
+    }
+  }
+
+  Future<void> _cacheOnlinePurchaseDetail(
+    String storeOwnerId,
+    PurchaseInvoiceModel detail,
+  ) async {
+    try {
+      final db = await AppDatabase.getInstance(storeOwnerId);
+      await db.transaction((txn) async {
+        await txn.insert(
+          'purchase_invoices',
+          {
+            'id': detail.id,
+            'invoice_number': detail.invoiceNumber,
+            'supplier_invoice_ref': detail.supplierInvoiceRef,
+            'supplier_id': detail.supplierId,
+            'supplier_name': detail.supplierName,
+            'invoice_date': detail.invoiceDate,
+            'due_date': detail.dueDate,
+            'payment_type': detail.paymentType,
+            'subtotal': detail.subtotal,
+            'tax_amount': detail.taxAmount,
+            'discount_amount': detail.discountAmount,
+            'total_amount': detail.totalAmount,
+            'paid_amount': detail.paidAmount,
+            'remaining_amount': detail.remainingAmount,
+            'currency': detail.currency,
+            'status': detail.status,
+            'costing_method_used': detail.costingMethodUsed ?? 'WEIGHTED_AVERAGE',
+            'attachment_url': detail.attachmentUrl,
+            'notes': detail.notes,
+            'synced': 1,
+            'created_at': detail.invoiceDate,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        for (final line in detail.items) {
+          await txn.insert(
+            'purchase_items',
+            {
+              'id': line.id,
+              'purchase_invoice_id': detail.id,
+              'item_id': line.itemId,
+              'item_name': line.itemName,
+              'base_unit': line.baseUnit,
+              'unit': line.unit,
+              'conversion_factor': line.conversionFactor,
+              'quantity': line.quantity,
+              'base_quantity': line.baseQuantity,
+              'unit_cost_price': line.unitCostPrice,
+              'tax_amount': line.taxAmount,
+              'discount_amount': line.discountAmount,
+              'total_line_cost': line.totalLineCost,
+              'sell_price': line.sellPrice,
+              'returned_quantity': line.returnedQuantity,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      });
+    } catch (_) {}
+  }
+
+  Future<PurchaseInvoiceModel?> _loadOfflinePurchaseById(
+    String storeOwnerId,
+    String invoiceId,
+  ) async {
+    try {
+      final db = await AppDatabase.getInstance(storeOwnerId);
+      final savedCurrency =
+          await AppDatabase.getStoreSetting(db, 'currency') ?? 'YER';
+      final savedSymbol =
+          await AppDatabase.getStoreSetting(db, 'currency_symbol') ?? 'ر.ي';
+
+      final invRows = await db.query(
+        'purchase_invoices',
+        where: 'id = ?',
+        whereArgs: [invoiceId],
+        limit: 1,
+      );
+      if (invRows.isEmpty) return null;
+
+      final itemRows = await db.query(
+        'purchase_items',
+        where: 'purchase_invoice_id = ?',
+        whereArgs: [invoiceId],
+      );
+      final itemNames = <String, String>{};
+      for (final ir in itemRows) {
+        final id = ir['id']?.toString() ?? '';
+        if (id.isNotEmpty) {
+          itemNames[id] = ir['item_name']?.toString() ?? 'صنف';
+        }
+      }
+
+      final returnRows = await db.query(
+        'purchase_returns',
+        where: 'purchase_invoice_id = ?',
+        whereArgs: [invoiceId],
+        orderBy: 'returned_at DESC',
+      );
+      final enrichedReturns = returnRows
+          .map((rr) => {
+                ...rr,
+                'item_name':
+                    rr['item_name'] ?? itemNames[rr['purchase_item_id']?.toString() ?? ''] ?? 'صنف',
+              })
+          .toList();
+
+      return PurchaseInvoiceModel.fromJson({
+        ...invRows.first,
+        'currency': invRows.first['currency'] ?? savedCurrency,
+        'currency_symbol': savedSymbol,
+        'items_count': itemRows.length,
+        'items': itemRows,
+        'returns': enrichedReturns,
+      });
+    } catch (_) {
       return null;
     }
   }
@@ -619,6 +805,8 @@ class PurchasesProvider with ChangeNotifier {
     bool promptOnSameDayPriceDiff = false,
     required List<PurchaseLineInput> items,
     String? storeOwnerId,
+    String? invoiceId,
+    String? clientOpId,
   }) async {
     if (items.length > maxInvoiceLines) {
       _errorCode = 'INVOICE_LINES_LIMIT_EXCEEDED';
@@ -633,9 +821,44 @@ class PurchasesProvider with ChangeNotifier {
     _errorDetails = null;
     notifyListeners();
 
-    final invoiceId = _uuid.v4();
+    final resolvedInvoiceId =
+        (invoiceId != null && invoiceId.trim().isNotEmpty) ? invoiceId.trim() : _uuid.v4();
+    final resolvedClientOpId =
+        (clientOpId != null && clientOpId.trim().isNotEmpty) ? clientOpId.trim() : _uuid.v4();
+
+    final normalizedLines = items.map((line) {
+      final lineId = (line.id != null && line.id!.trim().isNotEmpty)
+          ? line.id!.trim()
+          : _uuid.v4();
+      return PurchaseLineInput(
+        id: lineId,
+        itemId: line.itemId,
+        itemName: line.itemName,
+        unit: line.unit,
+        baseUnit: line.baseUnit,
+        conversionFactor: line.conversionFactor,
+        quantity: line.quantity,
+        unitCostPrice: line.unitCostPrice,
+        taxAmount: line.taxAmount,
+        discountAmount: line.discountAmount,
+        sellPrice: line.sellPrice,
+      );
+    }).toList();
+
+    var finalAttachmentUrl = attachmentUrl;
+    if (finalAttachmentUrl != null && finalAttachmentUrl.trim().isNotEmpty) {
+      final isLocal = !finalAttachmentUrl.startsWith('http') &&
+          !finalAttachmentUrl.startsWith('/v1/uploads/');
+      if (isLocal) {
+        try {
+          finalAttachmentUrl = await _api.uploadFile(finalAttachmentUrl);
+        } catch (_) {}
+      }
+    }
+
     final payload = <String, dynamic>{
-      'id': invoiceId,
+      'id': resolvedInvoiceId,
+      'clientOpId': resolvedClientOpId,
       'supplierId': supplierId,
       if (supplierInvoiceRef != null && supplierInvoiceRef.trim().isNotEmpty)
         'supplierInvoiceRef': supplierInvoiceRef.trim(),
@@ -646,19 +869,22 @@ class PurchasesProvider with ChangeNotifier {
       if (taxAmount > 0) 'taxAmount': taxAmount,
       if (discountAmount > 0) 'discountAmount': discountAmount,
       if (paidAmount != null) 'paidAmount': paidAmount,
-      if (attachmentUrl != null && attachmentUrl.isNotEmpty)
-        'attachmentUrl': attachmentUrl,
+      if (finalAttachmentUrl != null && finalAttachmentUrl.isNotEmpty)
+        'attachmentUrl': finalAttachmentUrl,
       if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
       'status': status,
       if (costingMethod != null && costingMethod.isNotEmpty)
         'costingMethod': costingMethod,
       if (promptOnSameDayPriceDiff) 'promptOnSameDayPriceDiff': true,
-      'items': items.map((e) => e.toApiJson()).toList(),
+      'items': normalizedLines.map((e) => e.toApiJson()).toList(),
     };
 
     try {
       final res = await _api.post(ApiEndpoints.purchases, data: payload);
       final created = PurchaseInvoiceModel.fromJson(Map<String, dynamic>.from(res.data));
+      if (storeOwnerId != null && storeOwnerId.isNotEmpty) {
+        await _cacheOnlinePurchaseDetail(storeOwnerId, created);
+      }
       await fetchPurchases(storeOwnerId: storeOwnerId);
       return created;
     } on ApiException catch (e) {
@@ -666,55 +892,228 @@ class PurchasesProvider with ChangeNotifier {
           status == 'POSTED' &&
           storeOwnerId != null &&
           storeOwnerId.isNotEmpty) {
-        // حفظ محلي في SQLite وإدراج في طابور المزامنة Offline Queue
+        // حفظ محلي متكامل في SQLite (فاتورة + بنود + تحديث المخزون + ذمة المورد) وإدراج في طابور المزامنة
         final db = await AppDatabase.getInstance(storeOwnerId);
-        final subtotal = items.fold(0.0, (s, l) => s + l.lineTotal);
+        final savedCurrency =
+            await AppDatabase.getStoreSetting(db, 'currency') ?? 'YER';
+        final savedSymbol =
+            await AppDatabase.getStoreSetting(db, 'currency_symbol') ?? 'ر.ي';
+        final subtotal = normalizedLines.fold(0.0, (s, l) => s + l.lineTotal);
         final total = subtotal + taxAmount - discountAmount;
         final paid = paymentType == 'CREDIT'
             ? 0.0
             : (paymentType == 'PARTIAL' ? (paidAmount ?? 0.0) : total);
         final remaining = (total - paid) > 0 ? (total - paid) : 0.0;
         final nowIso = DateTime.now().toIso8601String();
-        final offlineInvNo = 'OFF-${invoiceId.substring(0, 6).toUpperCase()}';
+        final offlineInvNo = 'OFF-${resolvedInvoiceId.substring(0, 6).toUpperCase()}';
+        final resolvedMethod = costingMethod ?? 'WEIGHTED_AVERAGE';
 
-        await db.insert('purchase_invoices', {
-          'id': invoiceId,
-          'client_op_id': invoiceId,
-          'supplier_id': supplierId,
-          'supplier_name': supplierNameForOffline ?? 'مورد',
-          'invoice_number': offlineInvNo,
-          'supplier_invoice_ref': supplierInvoiceRef,
-          'invoice_date': invoiceDate ?? nowIso,
-          'due_date': dueDate,
-          'payment_type': paymentType,
-          'wallet_id': walletId,
-          'subtotal': subtotal,
-          'tax_amount': taxAmount,
-          'discount_amount': discountAmount,
-          'total_amount': total,
-          'paid_amount': paid,
-          'remaining_amount': remaining,
-          'currency': 'YER',
-          'attachment_url': attachmentUrl,
-          'notes': notes,
-          'status': 'POSTED',
-          'costing_method_used': costingMethod ?? 'WEIGHTED_AVERAGE',
-          'created_at': nowIso,
-          'synced': 0,
-        });
-
-        await AppDatabase.enqueueOperation(
-          db,
-          clientOpId: _uuid.v4(),
-          opType: 'PURCHASE',
-          payload: payload,
+        // فحص منع التكرار لنفس الفاتورة أو العملية
+        final existingInv = await db.query(
+          'purchase_invoices',
+          where: 'id = ? OR client_op_id = ?',
+          whereArgs: [resolvedInvoiceId, resolvedClientOpId],
+          limit: 1,
         );
+
+        final localItemModels = <PurchaseItemModel>[];
+
+        if (existingInv.isEmpty) {
+          await db.transaction((txn) async {
+            await txn.insert(
+              'purchase_invoices',
+              {
+                'id': resolvedInvoiceId,
+                'client_op_id': resolvedClientOpId,
+                'supplier_id': supplierId,
+                'supplier_name': supplierNameForOffline ?? 'مورد',
+                'invoice_number': offlineInvNo,
+                'supplier_invoice_ref': supplierInvoiceRef,
+                'invoice_date': invoiceDate ?? nowIso,
+                'due_date': dueDate,
+                'payment_type': paymentType,
+                'wallet_id': walletId,
+                'subtotal': subtotal,
+                'tax_amount': taxAmount,
+                'discount_amount': discountAmount,
+                'total_amount': total,
+                'paid_amount': paid,
+                'remaining_amount': remaining,
+                'currency': savedCurrency,
+                'attachment_url': attachmentUrl,
+                'notes': notes,
+                'status': 'POSTED',
+                'costing_method_used': resolvedMethod,
+                'created_at': nowIso,
+                'synced': 0,
+              },
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+
+            for (final line in normalizedLines) {
+              final lineId = line.id!;
+              var resolvedItemId =
+                  (line.itemId != null && line.itemId!.trim().isNotEmpty)
+                      ? line.itemId!.trim()
+                      : null;
+              final baseUnit =
+                  line.baseUnit.trim().isEmpty ? line.unit.trim() : line.baseUnit.trim();
+              final addedBaseQty =
+                  (line.baseQuantity * 1000).roundToDouble() / 1000.0;
+              final effectiveCost =
+                  (line.effectiveBaseUnitCost * 100).roundToDouble() / 100.0;
+
+              // تحديث المخزون المحلي (أو إنشاء الصنف محلياً)
+              Map<String, dynamic>? existingItem;
+              if (resolvedItemId != null) {
+                final byId = await txn.query(
+                  'items',
+                  where: 'id = ? AND deleted_at IS NULL',
+                  whereArgs: [resolvedItemId],
+                  limit: 1,
+                );
+                if (byId.isNotEmpty) existingItem = byId.first;
+              }
+              if (existingItem == null) {
+                final byName = await txn.query(
+                  'items',
+                  where: 'LOWER(name) = ? AND deleted_at IS NULL',
+                  whereArgs: [line.itemName.trim().toLowerCase()],
+                  limit: 1,
+                );
+                if (byName.isNotEmpty) {
+                  existingItem = byName.first;
+                  resolvedItemId = existingItem['id']?.toString();
+                }
+              }
+
+              if (existingItem != null && resolvedItemId != null) {
+                final currentQty =
+                    (existingItem['quantity'] as num?)?.toDouble() ?? 0.0;
+                final currentCost =
+                    (existingItem['cost_price'] as num?)?.toDouble() ?? effectiveCost;
+                final nextQty =
+                    ((currentQty + addedBaseQty) * 1000).roundToDouble() / 1000.0;
+                final nextCost = CostingCalculator.computeUpdatedUnitCost(
+                  method: resolvedMethod,
+                  existingQty: currentQty,
+                  existingCost: currentCost,
+                  existingEntryDate: DateTime.now(),
+                  addedBaseQty: addedBaseQty,
+                  newBaseUnitCost: effectiveCost,
+                  invoiceDate: DateTime.now(),
+                );
+                await txn.update(
+                  'items',
+                  {
+                    'quantity': nextQty,
+                    'cost_price': nextCost,
+                    'sell_price': line.sellPrice,
+                  },
+                  where: 'id = ?',
+                  whereArgs: [resolvedItemId],
+                );
+              } else {
+                resolvedItemId ??= _uuid.v4();
+                await txn.insert(
+                  'items',
+                  {
+                    'id': resolvedItemId,
+                    'name': line.itemName.trim(),
+                    'unit': baseUnit.isEmpty ? 'حبة' : baseUnit,
+                    'quantity': addedBaseQty,
+                    'sell_price': line.sellPrice,
+                    'cost_price': effectiveCost,
+                    'emergency_price_mode': 'RANGE_OR_OPEN',
+                    'deleted_at': null,
+                  },
+                  conflictAlgorithm: ConflictAlgorithm.replace,
+                );
+              }
+
+              await txn.insert(
+                'purchase_items',
+                {
+                  'id': lineId,
+                  'purchase_invoice_id': resolvedInvoiceId,
+                  'item_id': resolvedItemId,
+                  'item_name': line.itemName.trim(),
+                  'base_unit': baseUnit.isEmpty ? 'حبة' : baseUnit,
+                  'unit': line.unit.trim().isEmpty ? 'حبة' : line.unit.trim(),
+                  'conversion_factor': line.conversionFactor,
+                  'quantity': line.quantity,
+                  'base_quantity': addedBaseQty,
+                  'unit_cost_price': line.unitCostPrice,
+                  'tax_amount': line.taxAmount,
+                  'discount_amount': line.discountAmount,
+                  'total_line_cost': line.lineTotal,
+                  'sell_price': line.sellPrice,
+                  'returned_quantity': 0.0,
+                },
+                conflictAlgorithm: ConflictAlgorithm.replace,
+              );
+
+              localItemModels.add(
+                PurchaseItemModel(
+                  id: lineId,
+                  itemId: resolvedItemId,
+                  itemName: line.itemName.trim(),
+                  baseUnit: baseUnit.isEmpty ? 'حبة' : baseUnit,
+                  unit: line.unit.trim().isEmpty ? 'حبة' : line.unit.trim(),
+                  conversionFactor: line.conversionFactor,
+                  quantity: line.quantity,
+                  baseQuantity: addedBaseQty,
+                  unitCostPrice: line.unitCostPrice,
+                  taxAmount: line.taxAmount,
+                  discountAmount: line.discountAmount,
+                  totalLineCost: line.lineTotal,
+                  effectiveBaseUnitCost: effectiveCost,
+                  sellPrice: line.sellPrice,
+                  returnedQuantity: 0.0,
+                ),
+              );
+            }
+
+            if (remaining > 0) {
+              final supRows = await txn.query(
+                'suppliers',
+                where: 'id = ?',
+                whereArgs: [supplierId],
+                limit: 1,
+              );
+              if (supRows.isNotEmpty) {
+                final curBal =
+                    (supRows.first['current_balance'] as num?)?.toDouble() ?? 0.0;
+                await txn.update(
+                  'suppliers',
+                  {'current_balance': curBal + remaining},
+                  where: 'id = ?',
+                  whereArgs: [supplierId],
+                );
+              }
+            }
+
+            await AppDatabase.enqueueOperation(
+              txn,
+              clientOpId: resolvedClientOpId,
+              opType: 'PURCHASE',
+              payload: payload,
+            );
+          });
+        } else {
+          await AppDatabase.enqueueOperation(
+            db,
+            clientOpId: resolvedClientOpId,
+            opType: 'PURCHASE',
+            payload: payload,
+          );
+        }
 
         await _loadOfflinePurchases(storeOwnerId);
         _isLoading = false;
         notifyListeners();
         return PurchaseInvoiceModel(
-          id: invoiceId,
+          id: resolvedInvoiceId,
           invoiceNumber: offlineInvNo,
           invoiceDate: invoiceDate ?? nowIso,
           supplierId: supplierId,
@@ -727,7 +1126,12 @@ class PurchasesProvider with ChangeNotifier {
           paidAmount: paid,
           settledAmount: 0,
           remainingAmount: remaining,
+          currency: savedCurrency,
+          currencySymbol: savedSymbol,
           status: 'POSTED',
+          costingMethodUsed: resolvedMethod,
+          itemsCount: localItemModels.length,
+          items: localItemModels,
         );
       }
       _errorCode = e.code;
@@ -814,15 +1218,44 @@ class PurchasesProvider with ChangeNotifier {
     required String refundMethod, // DEBT_REDUCTION | CASH_REFUND
     required String reason,
     String? storeOwnerId,
+    String? clientOpId,
   }) async {
     _isLoading = true;
     _errorMessage = null;
     _errorCode = null;
     notifyListeners();
 
-    final returnId = _uuid.v4();
+    if (quantity <= 0) {
+      _errorCode = 'VALIDATION_ERROR';
+      _errorMessage = 'الكمية المرتجعة يجب أن تكون أكبر من صفر.';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
+    if (reason.trim().length < 2) {
+      _errorCode = 'VALIDATION_ERROR';
+      _errorMessage = 'سبب المرتجع مطلوب.';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
+    if (quantityUnit == 'GRAM' && (quantity - quantity.roundToDouble()).abs() > 1e-6) {
+      _errorCode = 'FRACTIONAL_GRAMS_NOT_ALLOWED';
+      _errorMessage = 'الكمية المرتجعة بالجرام يجب أن تكون رقماً صحيحاً بدون كسور.';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+
+    final opId = (clientOpId != null && clientOpId.trim().isNotEmpty)
+        ? clientOpId.trim()
+        : _uuid.v4();
     final payload = <String, dynamic>{
-      'id': returnId,
+      'id': opId,
+      'clientOpId': opId,
+      'purchaseInvoiceId': invoiceId,
       'purchaseItemId': purchaseItemId,
       'quantity': quantity,
       if (quantityUnit != null) 'quantityUnit': quantityUnit,
@@ -835,6 +1268,19 @@ class PurchasesProvider with ChangeNotifier {
       await fetchPurchases(storeOwnerId: storeOwnerId);
       return true;
     } on ApiException catch (e) {
+      if (e.code == 'NETWORK_ERROR' && storeOwnerId != null && storeOwnerId.isNotEmpty) {
+        return await _enqueueOfflinePurchaseReturn(
+          storeOwnerId: storeOwnerId,
+          opId: opId,
+          invoiceId: invoiceId,
+          purchaseItemId: purchaseItemId,
+          quantity: quantity,
+          quantityUnit: quantityUnit,
+          refundMethod: refundMethod,
+          reason: reason.trim(),
+          payload: payload,
+        );
+      }
       _errorCode = e.code;
       _errorMessage = e.message;
       _isLoading = false;
@@ -842,6 +1288,249 @@ class PurchasesProvider with ChangeNotifier {
       return false;
     } catch (e) {
       _errorMessage = e.toString();
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> _enqueueOfflinePurchaseReturn({
+    required String storeOwnerId,
+    required String opId,
+    required String invoiceId,
+    required String purchaseItemId,
+    required double quantity,
+    String? quantityUnit,
+    required String refundMethod,
+    required String reason,
+    required Map<String, dynamic> payload,
+  }) async {
+    try {
+      final db = await AppDatabase.getInstance(storeOwnerId);
+
+      // فحص منع التكرار لنفس clientOpId
+      final existingRet = await db.query(
+        'purchase_returns',
+        where: 'id = ? OR client_op_id = ?',
+        whereArgs: [opId, opId],
+        limit: 1,
+      );
+      if (existingRet.isNotEmpty) {
+        await AppDatabase.enqueueOperation(
+          db,
+          clientOpId: opId,
+          opType: 'PURCHASE_RETURN',
+          payload: payload,
+        );
+        await _loadOfflinePurchases(storeOwnerId);
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      }
+
+      final invRows = await db.query(
+        'purchase_invoices',
+        where: 'id = ?',
+        whereArgs: [invoiceId],
+        limit: 1,
+      );
+      if (invRows.isEmpty) {
+        _errorCode = 'NOT_FOUND';
+        _errorMessage = 'فاتورة الشراء غير موجودة محلياً.';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+      final invRow = invRows.first;
+      if ((invRow['status']?.toString() ?? 'POSTED') != 'POSTED') {
+        _errorCode = 'VALIDATION_ERROR';
+        _errorMessage = 'لا يمكن تسجيل مرتجع إلا لفاتورة شراء مرحّلة ومعتمدة.';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+
+      final pItemRows = await db.query(
+        'purchase_items',
+        where: 'id = ? AND purchase_invoice_id = ?',
+        whereArgs: [purchaseItemId, invoiceId],
+        limit: 1,
+      );
+      if (pItemRows.isEmpty) {
+        _errorCode = 'NOT_FOUND';
+        _errorMessage = 'بند الفاتورة المحدد غير موجود.';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+      final pItem = pItemRows.first;
+      final itemId = pItem['item_id']?.toString();
+      final pUnit = pItem['unit']?.toString() ?? 'حبة';
+      final pBaseUnit = pItem['base_unit']?.toString() ?? pUnit;
+      final cf = (pItem['conversion_factor'] as num?)?.toDouble() ?? 1.0;
+      final purchasedQty = (pItem['quantity'] as num?)?.toDouble() ?? 0.0;
+      final baseQty =
+          (pItem['base_quantity'] as num?)?.toDouble() ?? (purchasedQty * cf);
+      final totalLineCost = (pItem['total_line_cost'] as num?)?.toDouble() ?? 0.0;
+      final returnedQtySoFar = (pItem['returned_quantity'] as num?)?.toDouble() ?? 0.0;
+      final effectiveBaseUnitCost =
+          (pItem['effective_base_unit_cost'] as num?)?.toDouble() ??
+          (baseQty > 0 ? totalLineCost / baseQty : 0.0);
+
+      double returnQty = quantity;
+      if (quantityUnit == 'GRAM') {
+        if (isKiloUnit(pUnit)) {
+          returnQty = (quantity / 1000.0 * 1000).roundToDouble() / 1000.0;
+        } else if (isKiloUnit(pBaseUnit) && cf > 0) {
+          final baseTmp = (quantity / 1000.0 * 1000).roundToDouble() / 1000.0;
+          returnQty = (baseTmp / cf * 1000).roundToDouble() / 1000.0;
+        }
+      }
+
+      final maxReturnable =
+          ((purchasedQty - returnedQtySoFar) * 1000).roundToDouble() / 1000.0;
+      if (returnQty > maxReturnable + 1e-6) {
+        _errorCode = 'RETURN_QTY_EXCEEDS_PURCHASED';
+        _errorMessage = 'الكمية المرتجعة تتجاوز الكمية المشتراة المتبقية في الفاتورة.';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+
+      final returnBaseQty = (returnQty * cf * 1000).roundToDouble() / 1000.0;
+
+      // التحقق من توفر المخزون المحلي وعدم وجود مبيعات سابقة على الصنف
+      if (itemId != null && itemId.isNotEmpty) {
+        final itemRows = await db.query(
+          'items',
+          where: 'id = ? AND deleted_at IS NULL',
+          whereArgs: [itemId],
+          limit: 1,
+        );
+        if (itemRows.isNotEmpty) {
+          final currentStock = (itemRows.first['quantity'] as num?)?.toDouble() ?? 0.0;
+          if (returnBaseQty > currentStock + 1e-6) {
+            _errorCode = 'INSUFFICIENT_STOCK';
+            _errorMessage = 'الكمية المتوفرة في المخزون أقل من الكمية المراد إرجاعها للمورد.';
+            _isLoading = false;
+            notifyListeners();
+            return false;
+          }
+        }
+      }
+
+      final returnAmount =
+          (returnBaseQty * effectiveBaseUnitCost * 100).roundToDouble() / 100.0;
+      final invRemaining = (invRow['remaining_amount'] as num?)?.toDouble() ?? 0.0;
+      final supplierId = invRow['supplier_id']?.toString() ?? '';
+
+      if (refundMethod == 'DEBT_REDUCTION' && returnAmount > invRemaining + 0.005) {
+        _errorCode = 'VALIDATION_ERROR';
+        _errorMessage =
+            'المبلغ المتبقي غير المسدد على هذه الفاتورة أقل من قيمة المرتجع. اختر الاسترداد النقدي (CASH_REFUND).';
+        _isLoading = false;
+        notifyListeners();
+        return false;
+      }
+
+      final nowIso = DateTime.now().toIso8601String();
+
+      await db.transaction((txn) async {
+        await txn.update(
+          'purchase_items',
+          {
+            'returned_quantity':
+                ((returnedQtySoFar + returnQty) * 1000).roundToDouble() / 1000.0,
+          },
+          where: 'id = ?',
+          whereArgs: [purchaseItemId],
+        );
+
+        if (itemId != null && itemId.isNotEmpty) {
+          final itemRows = await txn.query(
+            'items',
+            where: 'id = ?',
+            whereArgs: [itemId],
+            limit: 1,
+          );
+          if (itemRows.isNotEmpty) {
+            final curStock = (itemRows.first['quantity'] as num?)?.toDouble() ?? 0.0;
+            final nextStock =
+                ((curStock - returnBaseQty) * 1000).roundToDouble() / 1000.0;
+            await txn.update(
+              'items',
+              {'quantity': nextStock < 0 ? 0.0 : nextStock},
+              where: 'id = ?',
+              whereArgs: [itemId],
+            );
+          }
+        }
+
+        if (refundMethod == 'DEBT_REDUCTION') {
+          final nextRemaining =
+              ((invRemaining - returnAmount) * 100).roundToDouble() / 100.0;
+          await txn.update(
+            'purchase_invoices',
+            {
+              'remaining_amount': nextRemaining < 0 ? 0.0 : nextRemaining,
+            },
+            where: 'id = ?',
+            whereArgs: [invoiceId],
+          );
+
+          if (supplierId.isNotEmpty) {
+            final supRows = await txn.query(
+              'suppliers',
+              where: 'id = ?',
+              whereArgs: [supplierId],
+              limit: 1,
+            );
+            if (supRows.isNotEmpty) {
+              final curBal =
+                  (supRows.first['current_balance'] as num?)?.toDouble() ?? 0.0;
+              final nextBal =
+                  ((curBal - returnAmount) * 100).roundToDouble() / 100.0;
+              await txn.update(
+                'suppliers',
+                {'current_balance': nextBal < 0 ? 0.0 : nextBal},
+                where: 'id = ?',
+                whereArgs: [supplierId],
+              );
+            }
+          }
+        }
+
+        await txn.insert(
+          'purchase_returns',
+          {
+            'id': opId,
+            'client_op_id': opId,
+            'purchase_invoice_id': invoiceId,
+            'purchase_item_id': purchaseItemId,
+            'quantity': returnQty,
+            'total_amount': returnAmount,
+            'refund_method': refundMethod,
+            'reason': reason,
+            'returned_at': nowIso,
+            'synced': 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+
+        await AppDatabase.enqueueOperation(
+          txn,
+          clientOpId: opId,
+          opType: 'PURCHASE_RETURN',
+          payload: payload,
+        );
+      });
+
+      await _loadOfflinePurchases(storeOwnerId);
+      _isLoading = false;
+      notifyListeners();
+      return true;
+    } catch (err) {
+      _errorMessage = err.toString();
       _isLoading = false;
       notifyListeners();
       return false;

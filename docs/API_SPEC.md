@@ -2,7 +2,7 @@
 
 مرجع: `DATABASE_DESIGN.md`, `SCREEN_SPEC.md`, `06-user-roles-permissions.md`.
 
-Base URL (مثال): `https://api.maqouti.app/v1`
+Base URL (مثال): `https://api.maquaty.app/v1`
 
 ## اصطلاحات عامة
 - كل الاستجابات JSON، ترميز `UTF-8`.

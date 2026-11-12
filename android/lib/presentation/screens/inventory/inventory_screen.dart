@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/inventory_provider.dart';
+import '../../providers/store_settings_provider.dart';
 import '../../widgets/app_scaffold.dart';
 
 /// شاشة المخزون — الشاشة 6 (INVENTORY / 06-inventory.jpg)
@@ -36,6 +37,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
   Widget build(BuildContext context) {
     final inventory = context.watch<InventoryProvider>();
     final auth = context.watch<AuthProvider>();
+    final symbol = context.watch<StoreSettingsProvider>().currencySymbol;
     final items = inventory.items;
 
     return AppScaffold(
@@ -139,30 +141,32 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                         color: isLowStock ? AppColors.lossRed : AppColors.textSecondary,
                                       ),
                                     ),
-                                    if (auth.canManagePurchases && item.costPrice != null) ...[
+                                    if (auth.canShowCostPrice && item.costPrice != null) ...[
                                       const SizedBox(width: 10),
                                       Text(
-                                        'التكلفة: ${_currencyFormat.format(item.costPrice)} ريال',
+                                        'التكلفة: ${_currencyFormat.format(item.costPrice)} $symbol',
                                         style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
                                       ),
                                     ],
                                   ],
                                 ),
-                                trailing: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      '${_currencyFormat.format(item.sellPrice)} ريال',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 14,
-                                        color: AppColors.primary,
-                                      ),
-                                    ),
-                                    const Text('سعر البيع', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
-                                  ],
-                                ),
+                                trailing: auth.canShowSellPricesInventory
+                                    ? Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        crossAxisAlignment: CrossAxisAlignment.end,
+                                        children: [
+                                          Text(
+                                            '${_currencyFormat.format(item.sellPrice)} $symbol',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                              color: AppColors.primary,
+                                            ),
+                                          ),
+                                          const Text('سعر البيع', style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
+                                        ],
+                                      )
+                                    : null,
                               ),
                             );
                           },

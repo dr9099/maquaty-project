@@ -2,14 +2,18 @@
 /// المرجع: docs/API_SPEC.md و openapi.yaml
 class ApiEndpoints {
   // الرابط الافتراضي لخادم التطوير (10.0.2.2 لمشغل أندرويد الافتراضي، أو 127.0.0.1 / IP مخصص)
-  static const String defaultBaseUrl = 'http://10.0.2.2:3000';
+  static const String defaultBaseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'http://10.0.2.2:3000',
+  );
 
   // المصادقة والحساب
   static const String registerOwner = '/v1/auth/register-store-owner';
   static const String login = '/v1/auth/login';
   static const String refreshToken = '/v1/auth/refresh';
   static const String logout = '/v1/auth/logout';
-  static const String changeTempPassword = '/v1/auth/change-temp-password';
+  static const String changeTempPassword = '/v1/auth/set-new-password';
+  static const String setNewPassword = '/v1/auth/set-new-password';
 
   // المبيعات والمرتجعات
   static const String sales = '/v1/sales';
@@ -20,6 +24,7 @@ class ApiEndpoints {
   static const String items = '/v1/items';
   static const String inventory = '/v1/inventory';
   static const String damagedGoods = '/v1/damaged-goods';
+  static const String uploads = '/v1/uploads';
 
   // المحافظ الإلكترونية وتسويتها
   static const String wallets = '/v1/wallets';
@@ -36,6 +41,12 @@ class ApiEndpoints {
   static const String workers = '/v1/workers';
   static const String managedWorkers = '/v1/managed-workers';
   static String workerDetails(String id) => '/v1/workers/$id';
+  static String workerPassword(String id) => '/v1/workers/$id/password';
+  static String workerSuspend(String id) => '/v1/workers/$id/suspend';
+  static String workerPromoteResponsible(String id) =>
+      '/v1/workers/$id/promote-responsible';
+  static String workerDemoteResponsible(String id) =>
+      '/v1/workers/$id/demote-responsible';
 
   // المصروفات والسلف والمستحقات
   static const String expenses = '/v1/expenses';

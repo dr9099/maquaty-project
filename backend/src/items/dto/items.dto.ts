@@ -26,7 +26,7 @@ export class CreateItemDto {
   unit!: string;
 
   @IsNumber()
-  @IsPositive({ message: 'الكمية يجب أن تكون أكبر من صفر.' })
+  @Min(0, { message: 'الكمية لا تقبل رقماً سالباً.' })
   quantity!: number;
 
   @IsNumber()
@@ -84,7 +84,7 @@ export class UpdateItemDto {
 
   @IsOptional()
   @IsNumber()
-  @IsPositive()
+  @Min(0)
   quantity?: number;
 
   @IsOptional()

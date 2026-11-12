@@ -6,25 +6,27 @@ allprojects {
 }
 
 rootProject.buildDir = "../build"
+
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
+
+// Force compileSdk 35 on Flutter plugins (such as connectivity_plus / device_info_plus)
+// MUST be registered BEFORE evaluationDependsOn(":app") in Gradle 8.9
+subprojects { subproject ->
+    subproject.afterEvaluate {
+        if (subproject.hasProperty("android")) {
+            subproject.android {
+                compileSdkVersion 35
+            }
+        }
+    }
+}
+
 subprojects {
     project.evaluationDependsOn(":app")
 }
 
 tasks.register("clean", Delete) {
     delete rootProject.buildDir
-}
-
-
-// Fix connectivity_plus compileSdk mismatch
-subprojects { subproject ->
-    if (subproject.name == "connectivity_plus") {
-        subproject.plugins.withId("com.android.library") {
-            subproject.android {
-                compileSdkVersion 35
-            }
-        }
-    }
 }

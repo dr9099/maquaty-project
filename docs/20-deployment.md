@@ -57,24 +57,24 @@
 ## 4. النطاقات و DNS
 | النطاق | الخدمة | ملاحظات |
 |---|---|---|
-| `api.maqouti.app` | API | تستدعيه تطبيقات الموبايل والبوابة عبر `/v1` |
-| `admin.maqouti.app` | Admin Portal | نطاق فرعي مستقل؛ CORS مقيّد به |
-| `www.maqouti.app` | الموقع الثابت | لا يتصل بقاعدة البيانات |
-| `maqouti.app` | تحويل دائم | يُحوَّل إلى `www.` |
+| `api.maquaty.app` | API | تستدعيه تطبيقات الموبايل والبوابة عبر `/v1` |
+| `admin.maquaty.app` | Admin Portal | نطاق فرعي مستقل؛ CORS مقيّد به |
+| `www.maquaty.app` | الموقع الثابت | لا يتصل بقاعدة البيانات |
+| `maquaty.app` | تحويل دائم | يُحوَّل إلى `www.` |
 
 - شهادات TLS تُصدرها Caddy تلقائياً (Let's Encrypt)؛ يبقى وضع Cloudflare **Full (strict)**.
 - لا تُخدم خدمتان على نفس اسم المضيف (R-48 / قرار الفصل).
-- CORS في الإنتاج من `CORS_ORIGINS=https://admin.maqouti.app` فقط.
+- CORS في الإنتاج من `CORS_ORIGINS=https://admin.maquaty.app` فقط.
 
 ## 5. نموذج النشر
-- **الصور:** `ghcr.io/<owner>/maqouti-backend:<sha>` و`ghcr.io/<owner>/maqouti-admin-portal:<sha>`.
+- **الصور:** `ghcr.io/<owner>/maquaty-backend:<sha>` و`ghcr.io/<owner>/maquaty-admin-portal:<sha>`.
 - **التشغيل:** `deploy/docker-compose.prod.yml` (api + worker + admin-portal + caddy) بلا PostgreSQL محلي.
 - **الإعداد:** `deploy/.env.production` (غير متتبَّع في Git) + `deploy/Caddyfile`.
 - **الموقع:** `website/` يُربط كـ volume للقراءة فقط داخل Caddy.
 
 ### الإعداد الأول على الخادم
 1. تثبيت Docker + Docker Compose plugin، وإنشاء مستخدم غير root.
-2. استنساخ المستودد إلى `DEPLOY_PATH` (مثلاً `/opt/maqouti`).
+2. استنساخ المستودد إلى `DEPLOY_PATH` (مثلاً `/opt/maquaty`).
 3. نسخ `deploy/env.production.example` إلى `deploy/.env.production` وملء الأسرار.
 4. توجيه DNS في Cloudflare إلى IP الخادم، وفتح `80/443` فقط.
 5. `docker login ghcr.io` ثم `bash deploy/scripts/release.sh`.

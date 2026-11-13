@@ -58,28 +58,13 @@ async function bootstrap() {
   app.use(json({ limit: '2mb' }));
   app.use(urlencoded({ extended: true, limit: '2mb' }));
 
-  // CORS مقيّد بنطاقات لوحة الأدمن (مطلوب في الإنتاج)
-  const corsOrigins = (process.env.CORS_ORIGINS ?? '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
   app.enableCors({
-    origin: corsOrigins.length > 0 ? corsOrigins : !isProduction,
-    credentials: false,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Authorization',
-      'Content-Type',
-      'Accept',
-      'Origin',
-      'X-Requested-With',
-      'X-Request-Id',
-      'Idempotency-Key',
-      'X-MFA-Code',
-      'X-Device-Fingerprint',
-      'X-Step-Up-Code',
-    ],
-    maxAge: 86400,
+    origin: process.env.CORS_ORIGINS
+      ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim())
+      : true,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
 
   // تحويل المفاتيح من snake_case إلى camelCase في مسارات الأدمن (/v1/admin/*) قبل الوصول إلى ValidationPipe (R-48)

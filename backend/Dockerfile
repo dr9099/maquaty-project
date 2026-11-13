@@ -4,7 +4,7 @@ WORKDIR /app
 RUN apk add --no-cache openssl libc6-compat
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
-RUN npm ci --include=dev && npx prisma generate
+RUN npm install --include=dev --legacy-peer-deps && npx prisma generate
 
 # ===== مرحلة البناء =====
 FROM deps AS build

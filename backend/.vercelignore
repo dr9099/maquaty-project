@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+.env.*
+.pgdata
+.e2e-tmp
+test
+scripts
+dev-server.log
+

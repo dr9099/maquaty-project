@@ -12,10 +12,18 @@ import { diskStorage } from 'multer';
 import { randomUUID } from 'node:crypto';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 import { ApiError } from '../common/api-error';
 import { Public } from '../common/public.decorator';
 
-const uploadDir = path.resolve(process.cwd(), 'uploads');
+// الكود الأصلي السابق (للرجوع إليه عند الحاجة):
+// const uploadDir = path.resolve(process.cwd(), 'uploads');
+
+// مسار المجلد: في بيئة Vercel Serverless نستخدم مجلد النظام المؤقت os.tmpdir() لأنه المسار القابل للكتابة الوحيد
+const uploadDir = process.env.VERCEL
+  ? path.join(os.tmpdir(), 'uploads')
+  : path.resolve(process.cwd(), 'uploads');
+
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
